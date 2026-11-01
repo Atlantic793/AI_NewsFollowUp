@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
-import { access } from "node:fs/promises";
-import path from "node:path";
+import { createRequire } from "node:module";
 import type { CommandResult, CommandRunner } from "../types.js";
 
 let opencliCommand: string[] | null = null;
@@ -20,21 +19,9 @@ export function spawnRunner(): CommandRunner {
 
 async function resolveOpenCli(): Promise<string[]> {
   if (opencliCommand) return opencliCommand;
-  if (process.platform !== "win32") {
-    opencliCommand = ["opencli"];
-    return opencliCommand;
-  }
-  const where = await launch("where.exe", ["opencli.cmd"], 5_000);
-  const cmd = where.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line.toLowerCase().endsWith("opencli.cmd"));
-  const entry = cmd
-    ? path.join(path.dirname(cmd), "node_modules", "@jackwener", "opencli", "dist", "src", "main.js")
-    : "";
+  let entry: string;
   try {
-    if (!entry) throw new Error("missing");
-    await access(entry);
+    entry = createRequire(import.meta.url).resolve("@jackwener/opencli");
   } catch {
     throw Object.assign(new Error("本机还不能运行 opencli。"), { code: "OPENCLI_MISSING" });
   }
@@ -43,8 +30,16 @@ async function resolveOpenCli(): Promise<string[]> {
 }
 
 export function commandEnvironment(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const env = { ...base };
-  delete env.OPENAI_API_KEY;
+  const allowed = new Set([
+    "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "TZ", "CI", "CONTINUOUS_INTEGRATION",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "NCBI_API_KEY", "NCBI_EMAIL", "OPENALEX_MAILTO", "SEMANTIC_SCHOLAR_API_KEY", "HF_ENDPOINT",
+  ]);
+  const env: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(base)) {
+    if (allowed.has(name.toUpperCase()) || name.toUpperCase().startsWith("OPENCLI_")) env[name] = value;
+  }
   return env;
 }
 

@@ -1,0 +1,6 @@
+name: headline-chaser
+channels:
+  - https://conda.anaconda.org/conda-forge
+  - nodefaults
+dependencies:
+  - nodejs=22.23.4

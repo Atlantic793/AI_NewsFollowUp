@@ -4,11 +4,13 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
+    "verify:opencli": "tsx ../../scripts/verify-opencli.ts",
     "start": "tsx src/index.ts"
   },
   "dependencies": {
     "@followup/core": "*",
     "@hono/node-server": "^1.19.5",
+    "@jackwener/opencli": "2.0.2",
     "hono": "^4.9.8",
     "yaml": "^2.8.1"
   },

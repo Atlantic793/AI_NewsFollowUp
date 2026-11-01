@@ -11,5 +11,5 @@
       "@followup/core": ["./packages/core/src/index.ts"]
     }
   },
-  "include": ["packages/core/src", "apps/server/src", "apps/web/src", "vitest.config.ts"]
+  "include": ["packages/core/src", "apps/server/src", "apps/web/src", "scripts", "vitest.config.ts"]
 }

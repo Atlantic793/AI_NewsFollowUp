@@ -51,7 +51,7 @@ export async function runCollection(
   }
   const selected = theme.platforms.filter((platform) => platform.selected).map((platform) => platform.command);
   const queries = buildQueries({ keywords: theme.keywords, keywordsEn: theme.keywordsEn, mustInclude: theme.mustInclude });
-  const catalog = await discoverCatalog(deps, true);
+  const catalog = await discoverCatalog(deps, false);
   const known = new Set(catalog.commands.map((entry) => entry.command));
   const steps: JobStep[] = [];
   for (const command of selected) {

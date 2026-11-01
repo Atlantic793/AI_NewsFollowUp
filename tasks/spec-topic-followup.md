@@ -3,6 +3,8 @@
 > Technical specification derived from: tasks/prd-topic-followup.md
 > Generated: 2026-10-26 | Target branch: main | Commit: 99defe0
 
+> 文档状态（2026-11-01）：以下为第一版技术设计快照。当前实现已改为项目内固定版本 OpenCLI、常驻采集进程、批量目录缓存和独立后台登录检测，并加入任务持久化与预算。原文中的子进程逐命令发现、登录检查和变化对比规则不代表全部现状，当前入口见 [README](../README.md) 与 [现状说明](智能体现状与理想.md)。
+
 ## 1. Summary
 
 ### 1.1 What This SPEC Covers

@@ -1,10 +1,11 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { bad } from "../http-error.js";
 import type { AppDeps } from "../types.js";
 import { WRITE_VERBS } from "../types.js";
 import { genericSupports, keywordArg, needsLogin } from "./normalize.js";
 import { parseAuthStatus, parseHelp, parseList, readEnvelope, type LoginState } from "./parse.js";
+import type { AdapterCommand } from "./protocol.js";
 
 export interface CatalogEntry {
   command: string;
@@ -16,41 +17,92 @@ export interface CatalogEntry {
   selectable: boolean;
   disabledReason?: "not-normalizable" | "login-required";
   loginState: LoginState;
+  browser?: boolean;
 }
 
 interface CacheFile {
-  version: 2;
+  version: 3;
+  runtimeKey: string;
   fetchedAt: string;
   entries: CatalogEntry[];
 }
 
 const CACHE_MS = 24 * 60 * 60 * 1000;
+const LOGIN_CACHE_MS = 60_000;
+interface CatalogState {
+  entries?: CatalogEntry[];
+  fetchedAt: string;
+  refreshing?: Promise<void>;
+  refreshForced?: boolean;
+  login: Map<string, LoginState>;
+  loginExpires: number;
+  loginBusy?: Promise<void>;
+}
+const states = new WeakMap<AppDeps, CatalogState>();
 
 function siteOf(command: string): string {
   return command.split(/\s+/)[0] ?? command;
 }
 
-export async function discoverCatalog(deps: AppDeps, refresh: boolean): Promise<{ fetchedAt: string; commands: CatalogEntry[] }> {
+export async function discoverCatalog(deps: AppDeps, refresh: boolean): Promise<{ fetchedAt: string; commands: CatalogEntry[]; loginChecking: boolean }> {
   const cachePath = path.join(deps.dataDir, "catalog-cache.json");
-  const cached = await readCache(cachePath);
-  const fresh = cached && Date.parse(deps.now().toISOString()) - Date.parse(cached.fetchedAt) < CACHE_MS;
-  let entries = !refresh && fresh && cached ? cached.entries.filter((entry) => entry.transport === "adapter") : null;
-  if (!entries) {
-    try {
-      entries = await listAdapters(deps);
-      await mkdir(deps.dataDir, { recursive: true });
-      await writeFile(cachePath, JSON.stringify({ version: 2, fetchedAt: deps.now().toISOString(), entries } satisfies CacheFile), "utf8");
-    } catch (error) {
-      if (cached) entries = cached.entries.filter((entry) => entry.transport === "adapter");
-      else {
-        const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
-        if (code === "OPENCLI_MISSING") throw bad(503, "OPENCLI_MISSING", "本机还不能运行 opencli。");
-        throw bad(503, "CATALOG_FAILED", "暂时读不到信息源清单。");
-      }
-    }
+  const runtimeKey = deps.runner.cacheKey ?? "injected-runner";
+  let state = states.get(deps);
+  if (!state) {
+    state = { fetchedAt: "", login: new Map(), loginExpires: 0 };
+    states.set(deps, state);
   }
-  const login = await readLogin(deps, entries.map((entry) => entry.site));
-  const withLogin = entries.map((entry) => ({ ...entry, loginState: login.get(entry.site) ?? "unknown" }));
+  const current = state;
+  if (refresh && current.refreshing && !current.refreshForced) {
+    await current.refreshing.catch(() => undefined);
+    return discoverCatalog(deps, true);
+  }
+  const fresh = () => current.entries !== undefined && deps.now().getTime() - Date.parse(current.fetchedAt) < CACHE_MS;
+  if (refresh || !fresh()) {
+    if (!current.refreshing) {
+      current.refreshForced = refresh;
+      current.refreshing = (async () => {
+        const cached = await readCache(cachePath, runtimeKey);
+        if (!current.entries && cached) {
+          current.entries = cached.entries;
+          current.fetchedAt = cached.fetchedAt;
+        }
+        if (!refresh && fresh()) return;
+        try {
+          const entries = deps.runner.catalog
+            ? (await deps.runner.catalog(refresh)).map(catalogEntry)
+            : await listAdapters(deps);
+          const fetchedAt = deps.now().toISOString();
+          await mkdir(deps.dataDir, { recursive: true });
+          const temporary = `${cachePath}.${crypto.randomUUID()}.tmp`;
+          try {
+            await writeFile(temporary, JSON.stringify({ version: 3, runtimeKey, fetchedAt, entries } satisfies CacheFile), "utf8");
+            await rename(temporary, cachePath);
+          } finally {
+            await rm(temporary, { force: true });
+          }
+          current.entries = entries;
+          current.fetchedAt = fetchedAt;
+        } catch (error) {
+          if (!current.entries) {
+            const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
+            if (code === "OPENCLI_MISSING") throw bad(503, "OPENCLI_MISSING", "本机还不能运行 opencli。");
+            throw bad(503, "CATALOG_FAILED", "暂时读不到信息源清单。");
+          }
+        }
+      })().finally(() => { current.refreshing = undefined; current.refreshForced = false; });
+    }
+    await current.refreshing;
+  }
+  const entries = current.entries ?? [];
+  // 登录状态独立缓存、后台更新，目录读取与采集不等待浏览器。
+  if (!current.loginBusy && (refresh || deps.now().getTime() >= current.loginExpires)) {
+    current.loginExpires = deps.now().getTime() + LOGIN_CACHE_MS;
+    const sites = entries.filter((entry) => entry.selectable && entry.browser).map((entry) => entry.site);
+    current.loginBusy = readLogin(deps, sites).then((login) => { current.login = login; })
+      .finally(() => { current.loginBusy = undefined; });
+  }
+  const withLogin = entries.map((entry) => ({ ...entry, loginState: current.login.get(entry.site) ?? "unknown" }));
   const recipes = deps.recipes
     .filter((recipe) => !withLogin.some((entry) => entry.selectable && entry.site === recipe.site))
     .map((recipe): CatalogEntry => ({
@@ -63,7 +115,19 @@ export async function discoverCatalog(deps: AppDeps, refresh: boolean): Promise<
       selectable: true,
       loginState: "unknown",
     }));
-  return { fetchedAt: cached && !refresh && fresh ? cached.fetchedAt : deps.now().toISOString(), commands: [...withLogin, ...recipes] };
+  return { fetchedAt: current.fetchedAt, commands: [...withLogin, ...recipes], loginChecking: Boolean(current.loginBusy) };
+}
+
+function catalogEntry({ command, description, help }: AdapterCommand): CatalogEntry {
+  const arg = keywordArg(help);
+  const login = needsLogin(description) || needsLogin(help.description) || help.siteSession === true;
+  const supported = help.access === "read" && !WRITE_VERBS.has(command.split(/\s+/)[1] ?? "") && arg !== null && genericSupports(help) && !login;
+  return {
+    command, site: siteOf(command), description, access: "read", transport: "adapter",
+    keywordArg: arg ?? "query", selectable: supported,
+    disabledReason: login ? "login-required" : supported ? undefined : "not-normalizable",
+    loginState: "unknown", browser: help.browser === true,
+  };
 }
 
 async function listAdapters(deps: AppDeps): Promise<CatalogEntry[]> {
@@ -92,20 +156,7 @@ async function listAdapters(deps: AppDeps): Promise<CatalogEntry[]> {
     } catch {
       continue;
     }
-    const arg = keywordArg(help);
-    const login = needsLogin(command.description) || needsLogin(help.description) || help.siteSession === true;
-    const supported = arg !== null && genericSupports(help) && !login;
-    entries.push({
-      command: command.command,
-      site: siteOf(command.command),
-      description: command.description,
-      access: "read",
-      transport: "adapter",
-      keywordArg: arg ?? "query",
-      selectable: supported,
-      disabledReason: login ? "login-required" : supported ? undefined : "not-normalizable",
-      loginState: "unknown",
-    });
+    entries.push(catalogEntry({ command: command.command, description: command.description, help: { ...help, access: "read" } }));
   }
   return entries;
 }
@@ -114,7 +165,7 @@ async function readLogin(deps: AppDeps, sites: string[]): Promise<Map<string, Lo
   const unique = [...new Set(sites)];
   if (unique.length === 0) return new Map();
   try {
-    const result = await deps.runner.run(["opencli", "auth", "status", "--site", unique.join(","), "-f", "json"], 20_000);
+    const result = await deps.runner.run(["opencli", "auth", "status", "--site", unique.join(","), "-f", "json"], 3_500);
     if (result.code !== 0 && !result.stdout.trim()) return new Map();
     return parseAuthStatus(result.stdout);
   } catch {
@@ -132,10 +183,10 @@ export async function runSearchCommand(deps: AppDeps, command: string, keyword: 
   return { ok: true, data: envelope.data };
 }
 
-async function readCache(file: string): Promise<CacheFile | null> {
+async function readCache(file: string, runtimeKey: string): Promise<CacheFile | null> {
   try {
     const parsed = JSON.parse(await readFile(file, "utf8")) as CacheFile;
-    if (!parsed || parsed.version !== 2 || !Array.isArray(parsed.entries)) return null;
+    if (!parsed || parsed.version !== 3 || parsed.runtimeKey !== runtimeKey || !Array.isArray(parsed.entries) || !Number.isFinite(Date.parse(parsed.fetchedAt))) return null;
     return parsed;
   } catch {
     return null;

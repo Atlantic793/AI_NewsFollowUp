@@ -90,6 +90,7 @@ export function Workspace() {
   const [payload, setPayload] = useState<TopicPayload | null>(null);
   const [center, setCenter] = useState<Center>("board");
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
+  const [loginChecking, setLoginChecking] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [tree, setTree] = useState<TreeEntry[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -139,13 +140,14 @@ export function Workspace() {
     setMorningOn(next.topic.morningReport.enabled);
     setMorningTime(next.topic.morningReport.time ?? "08:00");
     const [source, status, files, chat, current] = await Promise.all([
-      request<{ commands: CatalogEntry[] }>("/api/catalog"),
+      request<{ commands: CatalogEntry[]; loginChecking: boolean }>("/api/catalog"),
       request<Overview>(`/api/topics/${id}/overview`),
       request<{ entries: TreeEntry[] }>(`/api/topics/${id}/tree`),
       request<{ messages: ChatMessage[] }>(`/api/topics/${id}/chat`),
       request<{ job: JobView | null }>(`/api/topics/${id}/jobs/current`),
     ]);
     setCatalog(source.commands);
+    setLoginChecking(source.loginChecking);
     setOverview(status);
     setTree(files.entries);
     setMessages(chat.messages);
@@ -210,6 +212,24 @@ export function Workspace() {
       stop = true;
     };
   }, [id]);
+
+  useEffect(() => {
+    if (!loginChecking) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let attempts = 0;
+    const poll = async () => {
+      try {
+        const source = await request<{ commands: CatalogEntry[]; loginChecking: boolean }>("/api/catalog");
+        if (stopped) return;
+        setCatalog(source.commands);
+        setLoginChecking(source.loginChecking);
+        if (source.loginChecking && ++attempts < 5) timer = setTimeout(() => void poll(), 1_000);
+      } catch { /* 登录状态提示不影响主题工作区。 */ }
+    };
+    timer = setTimeout(() => void poll(), 1_000);
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [id, loginChecking]);
 
   async function run(kind: "research" | "track") {
     setFormError("");

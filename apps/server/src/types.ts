@@ -1,3 +1,5 @@
+import type { AdapterCommand } from "./opencli/protocol.js";
+
 export interface CommandResult {
   code: number;
   stdout: string;
@@ -5,6 +7,8 @@ export interface CommandResult {
 }
 
 export interface CommandRunner {
+  cacheKey?: string;
+  catalog?(refresh?: boolean): Promise<AdapterCommand[]>;
   run(argv: readonly string[], timeoutMs: number): Promise<CommandResult>;
 }
 
