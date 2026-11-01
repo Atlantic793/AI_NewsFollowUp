@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "paths": {
+      "@followup/core": ["./packages/core/src/index.ts"]
+    }
+  },
+  "include": ["packages/core/src", "apps/server/src", "apps/web/src", "vitest.config.ts"]
+}

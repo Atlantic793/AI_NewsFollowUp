@@ -1,0 +1,25 @@
+{
+  "name": "ai-news-followup",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,green \"npm run dev -w @followup/server\" \"npm run dev -w @followup/web\"",
+    "test": "vitest run",
+    "typecheck": "tsc --pretty false --noEmit",
+    "lint": "eslint .",
+    "start": "npm run build -w @followup/web && npm run start -w @followup/server"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.36.0",
+    "@types/node": "^24.6.0",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.36.0",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.44.0",
+    "vitest": "^3.2.4"
+  }
+}
