@@ -117,7 +117,8 @@ export function parseAuthStatus(stdout: string): Map<string, LoginState> {
     const row = asRecord(entry);
     if (!row) continue;
     const site = [row.site, row.id, row.name].find((value) => typeof value === "string");
-    const status = [row.status, row.state].find((value) => typeof value === "string");
+    const rawStatus = [row.status, row.state].find((value) => typeof value === "string");
+    const status = typeof rawStatus === "string" ? rawStatus.replaceAll("_", "-") : rawStatus;
     if (typeof site !== "string" || typeof status !== "string") continue;
     if (status === "logged-in" || status === "not-logged-in" || status === "unknown" || status === "error") {
       found.set(site, status);

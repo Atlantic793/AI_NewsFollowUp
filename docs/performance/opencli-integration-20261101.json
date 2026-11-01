@@ -1,0 +1,71 @@
+{
+  "date": "2026-11-01",
+  "scope": "Windows local working tree; metadata and unauthenticated public npm source; no model calls",
+  "opencliVersion": "2.0.2",
+  "before": {
+    "coldDirectoryMs": 229416,
+    "warmDirectoryMs": 20054,
+    "helpCalls": 133,
+    "serialHelpMs": 205620,
+    "authTimedOut": true
+  },
+  "after": {
+    "node": "v22.23.4",
+    "executablePath": "system directories only; global OpenCLI is unavailable",
+    "directory": {
+      "coldMs": 644.09,
+      "warmMs": 1.4,
+      "concurrent10Ms": 10.13,
+      "commands": 133,
+      "selectable": 92,
+      "concurrentAllSucceeded": true
+    },
+    "login": {
+      "ms": 393.74,
+      "returned": true,
+      "code": 0
+    },
+    "refresh": {
+      "concurrent3Ms": 482.39,
+      "allSucceeded": true
+    },
+    "publicSearch": {
+      "ms": 1887.55,
+      "items": 20,
+      "validUrls": true
+    },
+    "research": {
+      "succeeded": true,
+      "items": 20,
+      "snapshotId": "20261101-144957",
+      "modelUsed": false
+    }
+  },
+  "catalogCompatibility": {
+    "previous": 133,
+    "current": 133,
+    "differences": [],
+    "missing": []
+  },
+  "checks": {
+    "testsPassed": 42,
+    "testFilesPassed": 9,
+    "typecheck": "passed",
+    "lint": "passed",
+    "webBuild": "passed",
+    "diffCheck": "passed",
+    "httpSmoke": {
+      "health": true,
+      "frontendStatus": 200,
+      "coldDirectoryMs": 523,
+      "warmDirectoryMs": 12,
+      "serverAndCollectorExitedAfterSigint": true
+    },
+    "independentReadOnlyReview": "queue deadline and environment allowlist findings addressed; no remaining blocking finding"
+  },
+  "limits": [
+    "Browser Bridge was not connected; authenticated browser source collection was not live-tested.",
+    "Performance figures are individual local measurements, not cross-machine guarantees.",
+    "No model summary quality evaluation was performed."
+  ]
+}
