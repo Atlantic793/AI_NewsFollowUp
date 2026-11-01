@@ -9,7 +9,7 @@ import { runCollection } from "./jobs/collect.js";
 import { holdMorning, morningAlreadySettled, readJob, recoverJobs, writeJob, type JobState } from "./jobs/job-store.js";
 import { appendTrace } from "./jobs/trace.js";
 import { extractJson } from "./model/json.js";
-import { createNote, saveMaterialUrl } from "./notes/create.js";
+import { createNote, saveMaterialUrl, saveNoteText } from "./notes/create.js";
 import { discoverCatalog } from "./opencli/catalog.js";
 import { runDueTopics } from "./schedule/due.js";
 import { listBriefs, listSnapshots, readBriefFile } from "./topic/archive.js";
@@ -132,7 +132,7 @@ export function createApp(deps: AppDeps) {
 
   app.post("/api/topics/:id/confirm", async (c) => {
     const theme = await loadTheme(deps, c.req.param("id"));
-    if (theme.status === "confirmed") throw bad(409, "ALREADY_CONFIRMED", "计划已经确认，请在调控面板里修改。");
+    if (theme.status === "confirmed") throw bad(409, "ALREADY_CONFIRMED", "计划已经确认，请在设置里修改。");
     const body = await c.req.json() as { keywords?: string[]; platforms?: string[]; folderPath?: string; card?: ThemeCardInput };
     const next = applyThemeCard(await acceptPlan(deps, theme, body.keywords ?? [], body.platforms ?? [], body.folderPath ?? theme.folderPath), body.card);
     next.status = "confirmed";
@@ -218,8 +218,11 @@ export function createApp(deps: AppDeps) {
 
   app.post("/api/topics/:id/notes", async (c) => {
     const theme = await loadTheme(deps, c.req.param("id"));
+    const body = await c.req.json() as { url?: string; materialPath?: string; text?: string };
+    if (typeof body.text === "string" && body.text.trim()) {
+      return c.json({ path: await saveNoteText(deps, theme.folderPath, body.text) });
+    }
     if (theme.status !== "confirmed") throw bad(409, "PLAN_NOT_CONFIRMED", "请先同意调研方案。");
-    const body = await c.req.json() as { url?: string; materialPath?: string };
     return c.json({ path: await createNote(deps, theme.folderPath, body) });
   });
 

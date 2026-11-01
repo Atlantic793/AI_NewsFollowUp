@@ -1,5 +1,21 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+
+const SIDE_KEY = "desk-side-width";
+const PANE_KEY = "desk-pane-width";
+
+function readWidth(key: string, fallback: number): number {
+  try {
+    const value = Number(localStorage.getItem(key));
+    return Number.isFinite(value) && value >= 160 ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), Math.max(min, max));
+}
 
 export function DeskFrame(props: {
   title: string;
@@ -10,10 +26,87 @@ export function DeskFrame(props: {
   morningOn: boolean;
   morningLocked: boolean;
   onMorning: (enabled: boolean) => void;
+  settingsOn: boolean;
+  onSettings: () => void;
   files: ReactNode;
   main: ReactNode;
   inspector: ReactNode;
 }) {
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const widths = useRef({ side: 228, pane: 320 });
+  const drag = useRef<{ edge: "side" | "pane"; startX: number; start: number } | null>(null);
+  const [side, setSide] = useState(() => readWidth(SIDE_KEY, 228));
+  const [pane, setPane] = useState(() => readWidth(PANE_KEY, 320));
+  widths.current = { side, pane };
+
+  useEffect(() => {
+    function move(event: PointerEvent) {
+      const current = drag.current;
+      const body = bodyRef.current;
+      if (!current || !body) return;
+      const total = body.clientWidth;
+      const delta = event.clientX - current.startX;
+      if (current.edge === "side") {
+        const max = Math.min(480, total - widths.current.pane - 320 - 16);
+        const next = clamp(current.start + delta, 180, max);
+        widths.current.side = next;
+        setSide(next);
+        return;
+      }
+      const max = Math.min(640, total - widths.current.side - 320 - 16);
+      const next = clamp(current.start - delta, 240, max);
+      widths.current.pane = next;
+      setPane(next);
+    }
+    function up() {
+      if (!drag.current) return;
+      drag.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      try {
+        localStorage.setItem(SIDE_KEY, String(widths.current.side));
+        localStorage.setItem(PANE_KEY, String(widths.current.pane));
+      } catch {
+        // 宽度记不住时，这一次拖拽仍然有效。
+      }
+    }
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+  }, []);
+
+  function begin(edge: "side" | "pane", event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    drag.current = { edge, startX: event.clientX, start: edge === "side" ? side : pane };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }
+
+  function nudge(edge: "side" | "pane", delta: number) {
+    const body = bodyRef.current;
+    const total = body?.clientWidth ?? 1440;
+    if (edge === "side") {
+      const max = Math.min(480, total - pane - 320 - 16);
+      const next = clamp(side + delta, 180, max);
+      widths.current.side = next;
+      setSide(next);
+    } else {
+      const max = Math.min(640, total - side - 320 - 16);
+      const next = clamp(pane + delta, 240, max);
+      widths.current.pane = next;
+      setPane(next);
+    }
+    try {
+      localStorage.setItem(SIDE_KEY, String(widths.current.side));
+      localStorage.setItem(PANE_KEY, String(widths.current.pane));
+    } catch {
+      // 宽度记不住时，这一次调整仍然有效。
+    }
+  }
+
   return (
     <div className="desk">
       <header className="desk-top">
@@ -41,11 +134,44 @@ export function DeskFrame(props: {
             <i />
           </button>
         </label>
+        <button className={props.settingsOn ? "desk-settings on" : "desk-settings"} type="button" aria-label="设置" aria-pressed={props.settingsOn} onClick={props.onSettings}>
+          <Icon name="settings" />
+        </button>
       </header>
-      <div className="desk-body">
-        <aside className="desk-side">{props.files}</aside>
+      <div className="desk-body" ref={bodyRef}>
+        <aside className="desk-side" style={{ width: side }}>{props.files}</aside>
+        <div
+          className="desk-split"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整档案宽度"
+          aria-valuemin={180}
+          aria-valuemax={480}
+          aria-valuenow={Math.round(side)}
+          tabIndex={0}
+          onPointerDown={(event) => begin("side", event)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowLeft") nudge("side", -16);
+            if (event.key === "ArrowRight") nudge("side", 16);
+          }}
+        />
         <main className="desk-main">{props.main}</main>
-        <aside className="desk-pane">{props.inspector}</aside>
+        <div
+          className="desk-split"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整对话宽度"
+          aria-valuemin={240}
+          aria-valuemax={640}
+          aria-valuenow={Math.round(pane)}
+          tabIndex={0}
+          onPointerDown={(event) => begin("pane", event)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowLeft") nudge("pane", 16);
+            if (event.key === "ArrowRight") nudge("pane", -16);
+          }}
+        />
+        <aside className="desk-pane" style={{ width: pane }}>{props.inspector}</aside>
       </div>
     </div>
   );
@@ -149,7 +275,7 @@ export function SettingRow(props: { icon: "key" | "users" | "clock" | "folder"; 
   );
 }
 
-export function Icon(props: { name: "back" | "refresh" | "check" | "link" | "down" | "right" | "key" | "users" | "clock" | "folder" | "source" | "grid" | "note" | "clip" }) {
+export function Icon(props: { name: "back" | "refresh" | "check" | "link" | "down" | "right" | "key" | "users" | "clock" | "folder" | "source" | "grid" | "note" | "clip" | "board" | "settings" }) {
   const common = { viewBox: "0 0 24 24", width: 16, height: 16, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
   switch (props.name) {
     case "back":
@@ -180,6 +306,10 @@ export function Icon(props: { name: "back" | "refresh" | "check" | "link" | "dow
       return <svg {...common}><path d="M7 3h8l5 5v13H7z" /><path d="M15 3v5h5" /></svg>;
     case "clip":
       return <svg {...common}><path d="m16 8-6.5 6.5a3 3 0 0 1-4-4L12 4a4 4 0 0 1 6 6l-7 7a5 5 0 0 1-7-7l1-1" /></svg>;
+    case "board":
+      return <svg {...common}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16M3 9h6" /></svg>;
+    case "settings":
+      return <svg {...common}><circle cx="12" cy="12" r="3" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8 5.6 18.4" /></svg>;
     default: {
       const unreachable: never = props.name;
       return unreachable;
