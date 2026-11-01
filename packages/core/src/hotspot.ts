@@ -58,6 +58,16 @@ export function blockedByExclude(title: string, summary: string, exclude: readon
   return exclude.some((term) => term.trim() && text.includes(term.trim().toLocaleLowerCase()));
 }
 
+function cleanTerms(values: readonly string[]): string[] {
+  const terms: string[] = [];
+  for (const raw of values) {
+    const term = raw.trim();
+    if (!term || terms.some((item) => item.toLocaleLowerCase() === term.toLocaleLowerCase())) continue;
+    terms.push(term);
+  }
+  return terms;
+}
+
 export function buildQueries(input: {
   keywords: readonly string[];
   keywordsEn: readonly string[];
@@ -66,15 +76,54 @@ export function buildQueries(input: {
   const queries: string[] = [];
   const push = (value: string) => {
     const query = value.trim();
-    if (!query || query.length > 80 || queries.includes(query) || queries.length >= 15) return;
+    if (!query || query.length > 80 || queries.some((item) => item.toLocaleLowerCase() === query.toLocaleLowerCase()) || queries.length >= 15) return;
     queries.push(query);
   };
-  for (const keyword of input.keywords) push(keyword);
-  for (const keyword of input.keywordsEn) push(keyword);
-  for (const keyword of input.keywords) {
-    for (const entity of input.mustInclude) push(`${keyword} ${entity}`);
+  const entities = cleanTerms(input.mustInclude);
+  const keywords = cleanTerms(input.keywords);
+  const english = cleanTerms(input.keywordsEn);
+  if (entities.length === 0) {
+    for (const keyword of keywords) push(keyword);
+    for (const keyword of english) push(keyword);
+    return queries;
+  }
+  const same = (left: string, right: string) => left.toLocaleLowerCase() === right.toLocaleLowerCase();
+  const containsEntity = (term: string) => entities.some((entity) => term.toLocaleLowerCase().includes(entity.toLocaleLowerCase()));
+  for (const keyword of [...keywords, ...english]) {
+    if (entities.some((entity) => same(entity, keyword))) continue;
+    if (containsEntity(keyword)) push(keyword);
+    else for (const entity of entities) push(`${keyword} ${entity}`);
   }
   return queries;
+}
+
+export function ensureTask(input: {
+  utterance: string;
+  keywords: readonly string[];
+  keywordsEn: readonly string[];
+  mustInclude: readonly string[];
+  queries: readonly string[];
+  assignment: string;
+}): { queries: string[]; assignment: string } {
+  const queries = cleanTerms(input.queries).slice(0, 15);
+  const entities = cleanTerms(input.mustInclude);
+  const facets = cleanTerms(input.keywords).filter((term) => !entities.some((entity) => entity.toLocaleLowerCase() === term.toLocaleLowerCase()));
+  const focus = (facets.length > 0 ? facets : cleanTerms(input.keywords)).join("、");
+  const who = entities.join("、");
+  const synthesized = who && focus ? `看清${who}的${focus}` : input.utterance.trim();
+  return {
+    queries: queries.length > 0 ? queries : buildQueries(input),
+    assignment: input.assignment.trim() || synthesized,
+  };
+}
+
+function matchesTopic(corpus: string, keywords: readonly string[], mustInclude: readonly string[]): boolean {
+  const text = corpus.toLocaleLowerCase();
+  const required = cleanTerms(mustInclude).map((term) => term.toLocaleLowerCase());
+  const facets = cleanTerms(keywords).map((term) => term.toLocaleLowerCase()).filter((term) => !required.includes(term));
+  if (required.some((term) => !text.includes(term))) return false;
+  if (facets.length > 0 && facets.every((term) => !text.includes(term))) return false;
+  return true;
 }
 
 export type DropReason = "没有日期" | "过了时间窗" | "和主题对不上" | "未打开";
@@ -95,11 +144,10 @@ export function screenByWindow<T extends { title: string; summary: string; publi
   exclude: readonly string[];
   items: readonly T[];
 }): { kept: T[]; marked: { item: T; drop?: DropReason }[]; counts: WindowDropCounts } {
-  const needles = [...input.keywords, ...input.mustInclude].map((term) => term.trim().toLocaleLowerCase()).filter(Boolean);
   const counts: WindowDropCounts = { outside: 0, noDate: 0, offTopic: 0 };
   const marked: { item: T; drop?: DropReason }[] = [];
   for (const item of input.items) {
-    const drop = reasonFor(item, input.now, input.days, needles, input.exclude);
+    const drop = reasonFor(item, input.now, input.days, input.keywords, input.mustInclude, input.exclude);
     if (!drop) {
       marked.push({ item });
       continue;
@@ -197,24 +245,22 @@ export function topicDrop(input: {
 }): DropReason | null {
   const body = input.body.trim();
   if (blockedByExclude(input.title, `${input.summary}\n${body}`, input.exclude)) return "和主题对不上";
-  const needles = [...input.keywords, ...input.mustInclude].map((term) => term.trim().toLocaleLowerCase()).filter(Boolean);
-  if (needles.length === 0) return null;
-  const corpus = (body || `${input.title}\n${input.summary}`).toLocaleLowerCase();
-  return needles.some((needle) => corpus.includes(needle)) ? null : "和主题对不上";
+  const corpus = body || `${input.title}\n${input.summary}`;
+  return matchesTopic(corpus, input.keywords, input.mustInclude) ? null : "和主题对不上";
 }
 
 function reasonFor(
   item: { title: string; summary: string; publishedAt: string },
   now: Date,
   days: number,
-  needles: readonly string[],
+  keywords: readonly string[],
+  mustInclude: readonly string[],
   exclude: readonly string[],
 ): DropReason | null {
   const gated = openGate(item, now, days, exclude);
   if (gated) return gated;
-  if (needles.length === 0) return null;
-  const text = `${item.title}\n${item.summary}`.toLocaleLowerCase();
-  return needles.some((needle) => text.includes(needle)) ? null : "和主题对不上";
+  const text = `${item.title}\n${item.summary}`;
+  return matchesTopic(text, keywords, mustInclude) ? null : "和主题对不上";
 }
 
 function scoreCandidate(candidate: HotspotCandidate, now: Date, mustInclude: readonly string[]): HotspotRecord[] {

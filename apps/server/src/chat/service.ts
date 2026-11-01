@@ -8,8 +8,15 @@ import { extractJson } from "../model/json.js";
 import { createNote, previewNoteTarget } from "../notes/create.js";
 import { discoverCatalog } from "../opencli/catalog.js";
 import { listBriefs, listSnapshots } from "../topic/archive.js";
-import { clearPending, coerceTimeWindow, readPending, readTheme, topicChatPath, writePending, type PendingAction, type ThemeAudience, type ThemeFile } from "../topic/store.js";
+import { clearPending, coerceAssignment, coerceQueries, coerceTimeWindow, readPending, readTheme, topicChatPath, writePending, type PendingAction, type ThemeAudience, type ThemeFile } from "../topic/store.js";
 import type { AppDeps, ChatMessage } from "../types.js";
+
+export interface ChatQuestion {
+  id: string;
+  prompt: string;
+  options: string[];
+  multiple: boolean;
+}
 
 interface StoredChat {
   id: string;
@@ -17,6 +24,7 @@ interface StoredChat {
   content: string;
   createdAt: string;
   citations: ({ type: "file"; path: string } | { type: "url"; url: string })[];
+  questions?: ChatQuestion[];
 }
 
 interface ModelIntent {
@@ -31,6 +39,9 @@ interface ModelIntent {
   itemCount?: number;
   audience?: string;
   platforms?: string[];
+  queries?: string[];
+  assignment?: string;
+  questions?: unknown;
   url?: string;
   materialPath?: string;
 }
@@ -131,12 +142,58 @@ function intentName(value: string | undefined): IntentName | null {
 
 async function replyDiscuss(deps: AppDeps, topicId: string, folder: string, intent: ModelIntent) {
   const citations = await verifiedCitations(folder, intent.citations ?? []);
+  const catalog = await discoverCatalog(deps, false).catch(() => null);
+  const commands = new Set((catalog?.commands ?? []).filter((entry) => entry.selectable).map((entry) => entry.command));
+  const questions = acceptQuestions(intent.questions, commands);
   await appendMessage(deps, topicId, {
     role: "assistant",
-    content: intent.answer || "文件夹里没有对应材料。",
+    content: intent.answer || (questions.length > 0 ? "先选一下这几项。" : "文件夹里没有对应材料。"),
     citations,
+    questions: questions.length > 0 ? questions : undefined,
   });
   return { messages: await readChat(deps, topicId), pending: await readPending(deps, topicId) };
+}
+
+const DAY_OPTION = /^过去\s*(\d+)\s*天$/;
+
+export function acceptQuestions(raw: unknown, commands: ReadonlySet<string>): ChatQuestion[] {
+  if (!Array.isArray(raw)) return [];
+  const questions: ChatQuestion[] = [];
+  for (const row of raw) {
+    if (questions.length >= 3 || !row || typeof row !== "object") continue;
+    const record = row as { id?: unknown; prompt?: unknown; options?: unknown };
+    const prompt = typeof record.prompt === "string" ? record.prompt.trim() : "";
+    const seen = new Set<string>();
+    const options: string[] = [];
+    if (Array.isArray(record.options)) {
+      for (const item of record.options) {
+        if (typeof item !== "string") continue;
+        const option = item.trim();
+        if (!option || option === "其他" || seen.has(option)) continue;
+        seen.add(option);
+        options.push(option);
+      }
+    }
+    const platform = options.filter((option) => commands.has(option));
+    const days = options.filter((option) => {
+      const matched = DAY_OPTION.exec(option);
+      return matched ? Number(matched[1]) >= 1 : false;
+    });
+    const aspect = options.filter((option) => !commands.has(option) && !DAY_OPTION.test(option));
+    const picked = platform.length >= 2
+      ? { options: platform.slice(0, 4), multiple: true }
+      : days.length >= 2
+        ? { options: days.slice(0, 4), multiple: false }
+        : platform.length > 0 || days.length > 0
+          ? null
+          : aspect.length >= 2
+            ? { options: aspect.slice(0, 4), multiple: false }
+            : null;
+    if (!prompt || !picked) continue;
+    const id = typeof record.id === "string" && record.id.trim() ? record.id.trim().slice(0, 40) : `q${questions.length + 1}`;
+    questions.push({ id, prompt: prompt.slice(0, 80), options: picked.options, multiple: picked.multiple });
+  }
+  return questions;
 }
 
 async function replyOrganize(deps: AppDeps, topicId: string, folder: string, theme: ThemeFile, intent: ModelIntent) {
@@ -188,6 +245,8 @@ async function replyPlan(deps: AppDeps, topicId: string, intent: ModelIntent) {
     keywords,
     platforms,
     createdAt: deps.now().toISOString(),
+    queries: coerceQueries(intent.queries),
+    assignment: coerceAssignment(intent.assignment),
     card: {
       keywordsEn: intent.keywordsEn ? wordList(intent.keywordsEn) : undefined,
       mustInclude: intent.mustInclude ? wordList(intent.mustInclude) : undefined,
@@ -221,7 +280,14 @@ async function replyTrack(deps: AppDeps, topicId: string, folder: string, theme:
 }
 
 async function rememberAction(deps: AppDeps, topicId: string, folder: string, intent: ModelIntent, type: "research" | "track") {
-  const pending: PendingAction = { type, keywords: [], platforms: [], createdAt: deps.now().toISOString() };
+  const pending: PendingAction = {
+    type,
+    keywords: [],
+    platforms: [],
+    createdAt: deps.now().toISOString(),
+    queries: coerceQueries(intent.queries),
+    assignment: coerceAssignment(intent.assignment),
+  };
   const citations = await verifiedCitations(folder, intent.citations ?? []);
   return placePending(deps, topicId, pending, intent.answer || "请到设置里确认这一次动作。", citations);
 }
@@ -253,7 +319,7 @@ async function contextMessages(deps: AppDeps, folder: string, theme: ThemeFile, 
   const messages: ChatMessage[] = [
     {
       role: "system",
-      content: "你在帮用户确认主题卡。信息不够就反问，不要催着立刻搜索。平台从 commands 里推荐并说明理由，不能写 commands 以外的名字。方案清楚后 intent 用 propose-plan，keywords 放中文检索词，并尽量给出 keywordsEn、mustInclude、exclude、timeWindow（过去的天数，正整数）、itemCount（5 到 7）、audience（学生、从业者、管理层、随便看看）。请用户到设置确认。用户要调研时 intent 用 research，已有调研且用户要看时间窗里的热点时 intent 用 track。讨论用 discuss。用户要整理已有链接或素材时 intent 用 organize，url 和 materialPath 只能抄资料里出现的地址，不要假设笔记已经写好。拿不准就不要编新的 intent。不要调用搜索命令。只输出 JSON：{\"intent\":\"discuss|propose-plan|research|track|organize\",\"answer\":string,\"citations\":[{\"type\":\"file\",\"path\":string}|{\"type\":\"url\",\"url\":string}],\"keywords\":string[],\"keywordsEn\":string[],\"mustInclude\":string[],\"exclude\":string[],\"timeWindow\":number,\"itemCount\":number,\"audience\":string,\"platforms\":string[],\"url\":string,\"materialPath\":string}。citations 只能抄资料里出现的路径或链接。",
+      content: "你在帮用户确认主题卡。信息不够就反问，不要催着立刻搜索。平台从 commands 里推荐并说明理由，不能写 commands 以外的名字。方案清楚后 intent 用 propose-plan，keywords 放中文检索词，并尽量给出 keywordsEn、mustInclude、exclude、timeWindow（过去的天数，正整数）、itemCount（5 到 7）、audience（学生、从业者、管理层、随便看看）。请用户到设置确认。用户要调研时 intent 用 research，已有调研且用户要看时间窗里的热点时 intent 用 track。这时 queries 写这次真正要搜索的原句，不要把关键词和必须照看拼在一起，最多 15 条；assignment 用一两句写清这次要看清什么。queries 和 assignment 不能改平台、时间窗或排除词。方案清楚后 queries 写真正要搜索的原句：每个方面配上必须照看的主体，不要单发主体，不要单发方面，不要把同一个词重复两遍。assignment 写这次要看清什么。讨论用 discuss。用户还没同时说清想看的方面、过去几天、用哪些平台时，intent 必须是 discuss，并给出 questions，不要用 propose-plan。questions 最多 3 题，每题 2 到 4 个选项，不要把「其他」写进选项。平台题的 options 只能抄 commands 里的 command，时间题写成「过去 7 天」这样的天数。answer 只留一句引导。三样都清楚以后再 propose-plan，那时不要给 questions。用户要整理已有链接或素材时 intent 用 organize，url 和 materialPath 只能抄资料里出现的地址，不要假设笔记已经写好。拿不准就不要编新的 intent。不要调用搜索命令。只输出 JSON：{\"intent\":\"discuss|propose-plan|research|track|organize\",\"answer\":string,\"citations\":[{\"type\":\"file\",\"path\":string}|{\"type\":\"url\",\"url\":string}],\"keywords\":string[],\"keywordsEn\":string[],\"mustInclude\":string[],\"exclude\":string[],\"timeWindow\":number,\"itemCount\":number,\"audience\":string,\"platforms\":string[],\"queries\":string[],\"assignment\":string,\"questions\":[{\"id\":string,\"prompt\":string,\"options\":string[]}],\"url\":string,\"materialPath\":string}。citations 只能抄资料里出现的路径或链接。",
     },
     ...keptHistory,
     {

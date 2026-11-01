@@ -31,12 +31,14 @@ describe("hotspot selection", () => {
       keywordsEn: ["llm"],
       mustInclude: ["OpenAI", "DeepSeek", "Anthropic", "Google", "Meta", "Mistral"],
     });
-    expect(queries).toContain("模型");
-    expect(queries).toContain("llm");
     expect(queries).toContain("模型 OpenAI");
+    expect(queries).toContain("llm OpenAI");
+    expect(queries).not.toContain("模型");
+    expect(queries).not.toContain("llm");
     expect(queries).not.toContain("OpenAI");
     expect(queries).not.toContain("DeepSeek");
     expect(queries).not.toContain("Mistral");
+    expect(queries).not.toContain("模型 模型");
     expect(queries.length).toBeLessThanOrEqual(15);
   });
 
@@ -155,7 +157,7 @@ describe("hotspot selection", () => {
       mustInclude: ["OpenAI"],
       exclude: ["广告"],
       items: [
-        { title: "OpenAI 发布", summary: "新版本", publishedAt: "2026-10-27T06:00:00Z" },
+        { title: "OpenAI 发布", summary: "新模型", publishedAt: "2026-10-27T06:00:00Z" },
         { title: "本地模型", summary: "一周内", publishedAt: "2026-10-22T08:00:00Z" },
         { title: "模型广告", summary: "推广", publishedAt: "2026-10-27T06:00:00Z" },
         { title: "没有日子", summary: "模型", publishedAt: "" },
@@ -163,16 +165,16 @@ describe("hotspot selection", () => {
         { title: "跑题", summary: "别的行业", publishedAt: "2026-10-27T06:00:00Z" },
       ],
     });
-    expect(screened.kept.map((item) => item.title)).toEqual(["OpenAI 发布", "本地模型"]);
+    expect(screened.kept.map((item) => item.title)).toEqual(["OpenAI 发布"]);
     expect(screened.marked.map((row) => row.drop ?? null)).toEqual([
       null,
-      null,
+      "和主题对不上",
       "和主题对不上",
       "没有日期",
       "过了时间窗",
       "和主题对不上",
     ]);
-    expect(screened.counts).toEqual({ outside: 1, noDate: 1, offTopic: 2 });
+    expect(screened.counts).toEqual({ outside: 1, noDate: 1, offTopic: 3 });
 
     const open = screenByWindow({
       now,
@@ -208,6 +210,22 @@ describe("hotspot selection", () => {
       body: "",
       keywords: ["本地模型"],
       mustInclude: [],
+      exclude: [],
+    })).toBeNull();
+    expect(topicDrop({
+      title: "饭圈争论",
+      summary: "",
+      body: "全文都在骂樊振东",
+      keywords: ["樊振东", "世界排名", "交手记录"],
+      mustInclude: ["樊振东"],
+      exclude: [],
+    })).toBe("和主题对不上");
+    expect(topicDrop({
+      title: "排名更新",
+      summary: "",
+      body: "樊振东世界排名升到第一",
+      keywords: ["樊振东", "世界排名", "交手记录"],
+      mustInclude: ["樊振东"],
       exclude: [],
     })).toBeNull();
     expect(takeToOpen([1, 2, 3], 2)).toEqual({ open: [1, 2], held: [3] });

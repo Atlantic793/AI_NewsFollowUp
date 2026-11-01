@@ -11,7 +11,7 @@ export interface ExplainSource {
   excerpt?: string;
 }
 
-export async function explainItems(deps: AppDeps, sources: ExplainSource[], topic: { utterance: string; audience: string }): Promise<DigestBrief> {
+export async function explainItems(deps: AppDeps, sources: ExplainSource[], topic: { utterance: string; audience: string; assignment?: string }): Promise<DigestBrief> {
   const kept = sources.filter((item) => /^https?:\/\//i.test(item.url)).slice(0, 7);
   const fallback = { ...fallbackDigest({ name: topic.utterance, sources: kept }), lead: "" };
   if (kept.length === 0 || !deps.model.available) return fallback;
@@ -23,13 +23,14 @@ export async function explainItems(deps: AppDeps, sources: ExplainSource[], topi
     const reply = await deps.model.complete([
       {
         role: "system",
-        content: "你在写一份主题简报。每条只能根据检索摘要和页面摘录写发生了什么、为何值得这个受众关注。摘录里没有的数字、百分比、价格和日期不要写。不要编造链接。lead 只写这些留下条目的局面：这几天里事情怎么样、新进展是哪几条、下一篇值得打开哪一条。不要提丢掉的条目，不要编摘录里没有的数字。跟进建议 2 到 4 条，每条点名上面某一条标题。只输出 JSON：{\"lead\":string,\"items\":[{\"url\":string,\"what\":string,\"why\":string}],\"followups\":string[]}。",
+        content: "你在写一份主题简报。每条只能根据检索摘要和页面摘录写发生了什么、为何值得这个受众关注。摘录里没有的数字、百分比、价格和日期不要写。不要编造链接。若给出任务说明，只用它判断这次要看清什么，不要据此编造摘录里没有的事实，也不要改条数。lead 只写这些留下条目的局面：这几天里事情怎么样、新进展是哪几条、下一篇值得打开哪一条。不要提丢掉的条目，不要编摘录里没有的数字。跟进建议 2 到 4 条，每条点名上面某一条标题。只输出 JSON：{\"lead\":string,\"items\":[{\"url\":string,\"what\":string,\"why\":string}],\"followups\":string[]}。",
       },
       {
         role: "user",
         content: JSON.stringify({
           topic: topic.utterance,
           audience: topic.audience,
+          assignment: topic.assignment ?? "",
           items: packets.map((item) => ({
             title: item.title,
             url: item.url,

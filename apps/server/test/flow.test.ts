@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { acceptQuestions } from "../src/chat/service.js";
 import { builtinReaders, pickReader } from "../src/notes/create.js";
 import type { AppDeps, CommandResult } from "../src/types.js";
 
@@ -30,6 +31,7 @@ function scriptedDeps(root: string, recipes: AppDeps["recipes"] = [], limits?: A
     materialPath: "",
   });
   const calls: string[] = [];
+  const briefs: string[] = [];
   const deps: AppDeps = {
     dataDir: path.join(root, "data"),
     topicsRoot: path.join(root, "topics"),
@@ -59,6 +61,7 @@ function scriptedDeps(root: string, recipes: AppDeps["recipes"] = [], limits?: A
           return JSON.stringify({ groups: [...grouped.values()] });
         }
         if (system.includes("正文")) return JSON.stringify({ text: "可读正文" });
+        if (system.includes("简报")) briefs.push(user);
         return chatReply;
       },
     },
@@ -95,6 +98,7 @@ function scriptedDeps(root: string, recipes: AppDeps["recipes"] = [], limits?: A
           ]);
         }
         if (argv[1] === "alpha" && argv[2] === "search") {
+          if (argv[3] === "失败词") return { code: 1, stdout: JSON.stringify({ ok: false, error: { message: "这条没有结果" } }), stderr: "" };
           if (customRows) return ok(customRows());
           searches += 1;
           const urls = searches === 1 ? [row("https://alpha.test/1")] : [row("https://alpha.test/1"), row("https://alpha.test/2"), row("https://alpha.test/3")];
@@ -125,6 +129,9 @@ function scriptedDeps(root: string, recipes: AppDeps["recipes"] = [], limits?: A
     modelCalls() {
       return modelCalls;
     },
+    briefs() {
+      return briefs;
+    },
   };
 }
 
@@ -142,6 +149,20 @@ async function waitJob(app: ReturnType<typeof createApp>, id: string) {
 }
 
 describe("topic follow-up flow", () => {
+  it("drops a platform option that is not in the catalog and keeps a real choice", () => {
+    const commands = new Set(["alpha search", "beta search"]);
+    const questions = acceptQuestions([
+      { id: "aspect", prompt: "想看哪方面", options: ["世界排名", "交手记录", "其他"] },
+      { id: "when", prompt: "看多久", options: ["过去 7 天", "过去 30 天"] },
+      { id: "where", prompt: "用哪些平台", options: ["alpha search", "beta search", "nope search"] },
+      { id: "broken", prompt: "坏掉的平台", options: ["alpha search", "nope search"] },
+    ], commands);
+    expect(questions.map((question) => question.id)).toEqual(["aspect", "when", "where"]);
+    expect(questions[2]).toMatchObject({ options: ["alpha search", "beta search"], multiple: true });
+    expect(JSON.stringify(questions)).not.toContain("nope search");
+    expect(JSON.stringify(questions)).not.toContain("其他");
+  });
+
   it("confirms a plan, collects, tracks, and keeps chat from collecting early", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "followup-"));
     const { app, calls, setNow, setChat } = scriptedDeps(root);
@@ -550,6 +571,156 @@ describe("topic follow-up flow", () => {
     const after = (await readdir(path.join(made.topic.folderPath, "快照"))).filter((name) => name.endsWith(".json"));
     const mornings = await Promise.all(after.map(async (name) => JSON.parse(await readFile(path.join(made.topic.folderPath, "快照", name), "utf8")) as { trigger: string }));
     expect(mornings.filter((snapshot) => snapshot.trigger === "morning")).toEqual([]);
+  });
+
+  it("keeps rows from the keywords that succeeded when one keyword fails", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "followup-"));
+    const { app, calls } = scriptedDeps(root);
+    const created = await json<{ topic: { id: string; folderPath: string } }>(await app.request("/api/topics", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ utterance: "单词失败" }),
+    }));
+    await app.request(`/api/topics/${created.topic.id}/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ keywords: ["本地模型", "失败词"], platforms: ["alpha search"], folderPath: created.topic.folderPath }),
+    });
+    await app.request(`/api/topics/${created.topic.id}/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "research" }),
+    });
+    const job = await waitJob(app, created.topic.id);
+    expect(job.state).toBe("succeeded");
+    expect(calls.filter((call) => call.includes("alpha search ") && !call.includes("--help"))).toEqual([
+      "opencli alpha search 本地模型 -f json",
+      "opencli alpha search 失败词 -f json",
+    ]);
+    const names = (await readdir(path.join(created.topic.folderPath, "快照"))).filter((name) => name.endsWith(".json"));
+    const snapshot = JSON.parse(await readFile(path.join(created.topic.folderPath, "快照", names[0] ?? ""), "utf8")) as { items: { url: string }[] };
+    expect(snapshot.items.some((item) => item.url === "https://alpha.test/1")).toBe(true);
+  });
+
+  it("finishes the snapshot when the step budget is spent on phases", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "followup-"));
+    const { app, calls } = scriptedDeps(root, [], { jobSteps: 1 });
+    const created = await json<{ topic: { id: string; folderPath: string } }>(await app.request("/api/topics", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ utterance: "阶段步数" }),
+    }));
+    await app.request(`/api/topics/${created.topic.id}/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ keywords: ["本地模型"], platforms: ["alpha search"], folderPath: created.topic.folderPath }),
+    });
+    await app.request(`/api/topics/${created.topic.id}/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "research" }),
+    });
+    const job = await waitJob(app, created.topic.id);
+    expect(calls.some((call) => call.includes("alpha search 本地模型") && !call.includes("--help"))).toBe(true);
+    expect(job.error).toBe("已停在清洗去重·超过步数上限");
+    const overview = await json<{ halted: string | null; empty: boolean }>(await app.request(`/api/topics/${created.topic.id}/overview`));
+    expect(overview.halted).toBe("已停在清洗去重·超过步数上限");
+    expect(overview.empty).toBe(false);
+  });
+
+  it("searches the confirmed query sentences and hands the assignment to the brief", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "followup-"));
+    const { app, calls, setChat, briefs } = scriptedDeps(root);
+    const created = await json<{ topic: { id: string; folderPath: string } }>(await app.request("/api/topics", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ utterance: "任务单" }),
+    }));
+    await app.request(`/api/topics/${created.topic.id}/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ keywords: ["本地模型"], platforms: ["alpha search"], folderPath: created.topic.folderPath }),
+    });
+    setChat(JSON.stringify({
+      intent: "research",
+      answer: "这次搜原句。",
+      citations: [],
+      keywords: [],
+      platforms: [],
+      queries: ["原句检索", "本地模型 本地模型"],
+      assignment: "看清退赛原因",
+      url: "",
+      materialPath: "",
+    }));
+    const chat = await json<{ pending: { type: string; queries?: string[]; assignment?: string } | null }>(await app.request(`/api/topics/${created.topic.id}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "开始调研" }),
+    }));
+    expect(chat.pending?.type).toBe("research");
+    expect(chat.pending?.queries).toEqual(["原句检索", "本地模型 本地模型"]);
+    expect(chat.pending?.assignment).toBe("看清退赛原因");
+    await app.request(`/api/topics/${created.topic.id}/pending/confirm`, { method: "POST" });
+    const job = await waitJob(app, created.topic.id);
+    expect(job.state).toBe("succeeded");
+    expect(calls.filter((call) => call.includes("alpha search ") && !call.includes("--help"))).toEqual([
+      "opencli alpha search 原句检索 -f json",
+      "opencli alpha search 本地模型 本地模型 -f json",
+    ]);
+    expect(briefs().some((body) => body.includes("看清退赛原因"))).toBe(true);
+  });
+
+  it("stores discuss choices and searches a facet with its subject after the plan is confirmed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "followup-"));
+    const { app, calls, setChat } = scriptedDeps(root);
+    const created = await json<{ topic: { id: string; folderPath: string } }>(await app.request("/api/topics", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ utterance: "樊振东" }),
+    }));
+    setChat(JSON.stringify({
+      intent: "discuss",
+      answer: "先选一下。",
+      citations: [],
+      keywords: [],
+      platforms: [],
+      questions: [
+        { id: "aspect", prompt: "想看哪方面", options: ["世界排名", "交手记录"] },
+        { id: "where", prompt: "用哪些平台", options: ["alpha search", "nope search"] },
+      ],
+      url: "",
+      materialPath: "",
+    }));
+    await app.request(`/api/topics/${created.topic.id}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "我想知道排名" }),
+    });
+    const chat = await json<{ messages: { questions?: { options: string[] }[] }[] }>(await app.request(`/api/topics/${created.topic.id}/chat`));
+    const saved = chat.messages.at(-1)?.questions ?? [];
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.options).toEqual(["世界排名", "交手记录"]);
+    await app.request(`/api/topics/${created.topic.id}/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        keywords: ["樊振东", "世界排名", "交手记录"],
+        platforms: ["alpha search"],
+        folderPath: created.topic.folderPath,
+        card: { mustInclude: ["樊振东"] },
+      }),
+    });
+    await app.request(`/api/topics/${created.topic.id}/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "research" }),
+    });
+    await waitJob(app, created.topic.id);
+    const searches = calls.filter((call) => call.includes("alpha search ") && !call.includes("--help"));
+    expect(searches).toContain("opencli alpha search 世界排名 樊振东 -f json");
+    expect(searches).toContain("opencli alpha search 交手记录 樊振东 -f json");
+    expect(searches).not.toContain("opencli alpha search 樊振东 -f json");
+    expect(searches).not.toContain("opencli alpha search 世界排名 -f json");
   });
 
   it("stops a chat when the reply exceeds the time limit", async () => {

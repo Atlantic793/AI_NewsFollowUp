@@ -37,6 +37,8 @@ export interface ThemeFile {
   language: "简体中文";
   reported: ReportedEvent[];
   platforms: { command: string; selected: boolean }[];
+  queries: string[];
+  assignment: string;
   morningReport: { enabled: boolean; time: string | null };
   folderPath: string;
   createdAt: string;
@@ -68,6 +70,8 @@ export interface PendingAction {
   createdAt: string;
   card?: ThemeCardInput;
   note?: PendingNote;
+  queries?: string[];
+  assignment?: string;
 }
 
 export async function ensureLayout(deps: AppDeps): Promise<void> {
@@ -149,8 +153,26 @@ export function coerceTheme(theme: ThemeFile): ThemeFile {
     return [{ eventKey: row.eventKey, title: String(row.title ?? ""), stage: row.stage, reportedAt: String(row.reportedAt ?? "") }];
   });
   theme.platforms ??= [];
+  theme.queries = coerceQueries(theme.queries);
+  theme.assignment = coerceAssignment(theme.assignment);
   theme.morningReport ??= { enabled: false, time: null };
   return theme;
+}
+
+export function coerceQueries(values: readonly string[] | undefined): string[] {
+  const queries: string[] = [];
+  for (const raw of values ?? []) {
+    const query = raw.trim();
+    if (!query || query.length > 80 || queries.includes(query) || queries.length >= 15) continue;
+    queries.push(query);
+  }
+  return queries;
+}
+
+export function coerceAssignment(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const text = value.trim();
+  return text.length > 400 ? text.slice(0, 400) : text;
 }
 
 function audienceOf(value: string | undefined, fallback: ThemeAudience): ThemeAudience {

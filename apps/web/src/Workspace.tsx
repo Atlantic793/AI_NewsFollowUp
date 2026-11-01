@@ -21,7 +21,7 @@ interface TopicPayload {
     folderPath: string;
     snapshotCount: number;
   };
-  pending: { type: "collect" | "research" | "track" | "update-plan" | "agree-plan" | "organize"; keywords: string[]; platforms: string[]; note?: { preview: string } } | null;
+  pending: { type: "collect" | "research" | "track" | "update-plan" | "agree-plan" | "organize"; keywords: string[]; platforms: string[]; queries?: string[]; assignment?: string; note?: { preview: string } } | null;
   defaultTab: "control" | "overview";
 }
 
@@ -64,7 +64,8 @@ interface Overview {
 }
 
 interface TreeEntry { path: string; kind: string; children?: { path: string }[] }
-interface ChatMessage { id: string; role: "user" | "assistant"; content: string; citations: { type: string; path?: string; url?: string }[] }
+interface ChatQuestion { id: string; prompt: string; options: string[]; multiple: boolean }
+interface ChatMessage { id: string; role: "user" | "assistant"; content: string; citations: { type: string; path?: string; url?: string }[]; questions?: ChatQuestion[] }
 interface JobStep { command: string; state: "pending" | "running" | "success" | "failed" }
 interface JobView { state: string; error: string | null; phase?: string; steps: JobStep[] }
 interface Reading {
@@ -656,17 +657,22 @@ export function Workspace() {
         <div className="talk">
           <div className="talk-log">
             {messages.length === 0 && <p className="quiet-line">跟这个主题接着说。</p>}
-            {messages.map((message) => (
-              <article key={message.id}>
-                <small>{message.role === "user" ? "你" : "跟进"}</small>
-                <p>{message.content}</p>
-                {message.citations.map((citation, index) => (
-                  citation.url
-                    ? <a key={`${citation.url}-${index}`} href={citation.url} target="_blank" rel="noopener noreferrer">{citation.url}</a>
-                    : <span key={`${citation.path ?? "cite"}-${index}`}>{citation.path}</span>
-                ))}
-              </article>
-            ))}
+            {messages.map((message, index) => {
+              const questions = message.questions ?? [];
+              const live = questions.length > 0 && index === messages.length - 1 && message.role === "assistant";
+              return (
+                <article key={message.id}>
+                  <small>{message.role === "user" ? "你" : "跟进"}</small>
+                  <p>{message.content}</p>
+                  {live ? <AskBox questions={questions} disabled={chatBusy} onSend={(text) => void postChat(text)} /> : <QuestionText questions={questions} />}
+                  {message.citations.map((citation, citationIndex) => (
+                    citation.url
+                      ? <a key={`${citation.url}-${citationIndex}`} href={citation.url} target="_blank" rel="noopener noreferrer">{citation.url}</a>
+                      : <span key={`${citation.path ?? "cite"}-${citationIndex}`}>{citation.path}</span>
+                  ))}
+                </article>
+              );
+            })}
           </div>
           {chatError && <p className="error">{chatError}</p>}
           <form onSubmit={(event) => { event.preventDefault(); void sendChat(); }}>
@@ -800,9 +806,9 @@ function pendingLabel(pending: NonNullable<TopicPayload["pending"]>): string {
   switch (pending.type) {
     case "collect":
     case "research":
-      return "开始调研";
+      return actionLabel("开始调研", pending);
     case "track":
-      return "动态热点追踪";
+      return actionLabel("动态热点追踪", pending);
     case "agree-plan":
     case "update-plan":
       return `同意方案：关键词 ${pending.keywords.join("、")}，平台 ${pending.platforms.join("、")}`;
@@ -813,6 +819,51 @@ function pendingLabel(pending: NonNullable<TopicPayload["pending"]>): string {
       return unreachable;
     }
   }
+}
+
+function QuestionText({ questions }: { questions: ChatQuestion[] }) {
+  if (questions.length === 0) return null;
+  return <p className="ask-locked">{questions.map((question) => `${question.prompt}：${question.options.join("、")}`).join("\n")}</p>;
+}
+
+function AskBox({ questions, disabled, onSend }: { questions: ChatQuestion[]; disabled: boolean; onSend: (text: string) => void }) {
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [otherOn, setOtherOn] = useState<Record<string, boolean>>({});
+  const [otherText, setOtherText] = useState<Record<string, string>>({});
+  const sentence = questions.flatMap((question) => {
+    const chosen = [...(picked[question.id] ?? [])];
+    const extra = otherOn[question.id] ? otherText[question.id]?.trim() ?? "" : "";
+    if (extra) chosen.push(extra);
+    return chosen.length > 0 ? [chosen.join(question.multiple ? "、" : "，")] : [];
+  }).join("，");
+  function toggle(question: ChatQuestion, option: string) {
+    setPicked((current) => {
+      const selected = current[question.id] ?? [];
+      const next = question.multiple
+        ? selected.includes(option) ? selected.filter((item) => item !== option) : [...selected, option]
+        : selected[0] === option ? [] : [option];
+      return { ...current, [question.id]: next };
+    });
+  }
+  return (
+    <div className="ask">
+      {questions.map((question) => (
+        <fieldset key={question.id}>
+          <legend>{question.prompt}</legend>
+          <div className="ask-options">
+            {question.options.map((option) => (
+              <button type="button" key={option} className={(picked[question.id] ?? []).includes(option) ? "on" : ""} disabled={disabled} onClick={() => toggle(question, option)}>{option}</button>
+            ))}
+            <button type="button" className={otherOn[question.id] ? "on" : ""} disabled={disabled} onClick={() => setOtherOn((current) => ({ ...current, [question.id]: !current[question.id] }))}>其他</button>
+          </div>
+          {otherOn[question.id] && (
+            <input value={otherText[question.id] ?? ""} disabled={disabled} placeholder="自己填" onChange={(event) => setOtherText((current) => ({ ...current, [question.id]: event.target.value }))} />
+          )}
+        </fieldset>
+      ))}
+      <button type="button" disabled={disabled || !sentence} onClick={() => onSend(sentence)}>就按这个</button>
+    </div>
+  );
 }
 
 function audienceOf(value: string): "学生" | "从业者" | "管理层" | "随便看看" {
@@ -842,10 +893,22 @@ function summarizeSteps(steps: JobStep[], running: boolean): { command: string; 
   return order.map((command) => ({ command, label: stepLabel(grouped.get(command) ?? []) }));
 }
 
+function actionLabel(action: string, pending: { queries?: string[]; assignment?: string }): string {
+  const queries = (pending.queries ?? []).map((query) => query.trim()).filter(Boolean);
+  const assignment = pending.assignment?.trim() ?? "";
+  const detail = [queries.join("、"), assignment].filter(Boolean).join("。");
+  return detail ? `${action}：${detail}` : action;
+}
+
 function stepLabel(states: JobStep["state"][]): string {
-  if (states.some((state) => state === "failed")) return "失败";
-  if (states.some((state) => state === "running" || state === "pending") && states.some((state) => state === "success")) return "正在采集";
-  if (states.every((state) => state === "success")) return "成功";
-  if (states.some((state) => state === "running")) return "正在采集";
+  const failed = states.some((state) => state === "failed");
+  const success = states.some((state) => state === "success");
+  const running = states.some((state) => state === "running");
+  const pending = states.some((state) => state === "pending");
+  if (failed && success) return "部分失败";
+  if (failed) return "失败";
+  if (running) return "正在采集";
+  if (pending && success) return "已停下";
+  if (success) return "成功";
   return "等待";
 }

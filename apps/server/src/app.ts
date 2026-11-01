@@ -1,7 +1,7 @@
 import { access, readdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Hono } from "hono";
-import { normalizeUtterance, validatePlan, isInsideFolder, type Verdict } from "@followup/core";
+import { ensureTask, normalizeUtterance, validatePlan, isInsideFolder, type Verdict } from "@followup/core";
 import { BudgetStop, isPhaseName } from "./budget.js";
 import { confirmOrganize, postChat, readChat } from "./chat/service.js";
 import { HttpError, bad } from "./http-error.js";
@@ -17,6 +17,8 @@ import {
   applyThemeCard,
   blankThemeCard,
   clearPending,
+  coerceAssignment,
+  coerceQueries,
   createTopicFolder,
   readPending,
   readRegistry,
@@ -90,6 +92,8 @@ export function createApp(deps: AppDeps) {
       keywords: [],
       ...blankThemeCard(),
       platforms: [],
+      queries: [],
+      assignment: "",
       morningReport: { enabled: false, time: null },
       folderPath,
       createdAt: now,
@@ -134,7 +138,7 @@ export function createApp(deps: AppDeps) {
     const theme = await loadTheme(deps, c.req.param("id"));
     if (theme.status === "confirmed") throw bad(409, "ALREADY_CONFIRMED", "计划已经确认，请在设置里修改。");
     const body = await c.req.json() as { keywords?: string[]; platforms?: string[]; folderPath?: string; card?: ThemeCardInput };
-    const next = applyThemeCard(await acceptPlan(deps, theme, body.keywords ?? [], body.platforms ?? [], body.folderPath ?? theme.folderPath), body.card);
+    const next = applyTask(theme, applyThemeCard(await acceptPlan(deps, theme, body.keywords ?? [], body.platforms ?? [], body.folderPath ?? theme.folderPath), body.card));
     next.status = "confirmed";
     next.confirmedAt = deps.now().toISOString();
     next.updatedAt = next.confirmedAt;
@@ -176,6 +180,7 @@ export function createApp(deps: AppDeps) {
       }
     }
     if (body.card) next = applyThemeCard(next, body.card);
+    next = applyTask(theme, next);
     next.updatedAt = deps.now().toISOString();
     await writeTheme(next);
     await pointRegistry(deps, next);
@@ -292,7 +297,13 @@ export function createApp(deps: AppDeps) {
       case "update-plan":
       case "agree-plan": {
         await clearPending(deps, theme.id);
-        const next = applyThemeCard(await acceptPlan(deps, theme, pending.keywords, pending.platforms, theme.folderPath), pending.card);
+        const planned = applyThemeCard(await acceptPlan(deps, theme, pending.keywords, pending.platforms, theme.folderPath), pending.card);
+        const task = ensureTask({
+          ...planned,
+          queries: coerceQueries(pending.queries),
+          assignment: coerceAssignment(pending.assignment),
+        });
+        const next = { ...planned, queries: task.queries, assignment: task.assignment };
         if (next.status === "pending") {
           next.status = "confirmed";
           next.confirmedAt = deps.now().toISOString();
@@ -304,6 +315,12 @@ export function createApp(deps: AppDeps) {
       case "track":
       case "research":
       case "collect": {
+        const queries = coerceQueries(pending.queries);
+        const assignment = coerceAssignment(pending.assignment);
+        if (queries.length > 0) theme.queries = queries;
+        if (assignment) theme.assignment = assignment;
+        theme.updatedAt = deps.now().toISOString();
+        await writeTheme(theme);
         await clearPending(deps, theme.id);
         await assertRunnable(theme, pending.type);
         const work = startJob(deps, jobs, theme.id, pending.type, null);
@@ -365,14 +382,15 @@ function startJob(deps: AppDeps, jobs: Map<string, JobState>, topicId: string, k
     if (!record) throw bad(404, "TOPIC_NOT_FOUND", "找不到这个主题。");
     await save();
     try {
-      job.snapshotId = await runCollection(deps, topicId, record.folderPath, kind, nominalDate, (steps, phase) => {
+      const outcome = await runCollection(deps, topicId, record.folderPath, kind, nominalDate, (steps, phase) => {
         job.steps = steps.map((step) => ({ ...step }));
         job.phase = phase;
         void save();
       });
-      job.state = "succeeded";
-      job.error = null;
-      await appendTrace(deps, topicId, { action: "job", phase: job.phase, command: kind, ms: Date.now() - started, note: "succeeded" });
+      job.snapshotId = outcome.snapshotId;
+      job.error = outcome.halted;
+      job.state = outcome.halted ? "failed" : "succeeded";
+      await appendTrace(deps, topicId, { action: "job", phase: job.phase, command: kind, ms: Date.now() - started, note: outcome.halted ?? "succeeded" });
     } catch (error) {
       job.state = "failed";
       if (error instanceof BudgetStop) {
@@ -418,6 +436,16 @@ async function loadTheme(deps: AppDeps, id: string): Promise<ThemeFile> {
   const theme = await readTheme(record.folderPath);
   theme.folderPath = record.folderPath;
   return theme;
+}
+
+function applyTask(before: ThemeFile, next: ThemeFile): ThemeFile {
+  const changed = JSON.stringify([before.keywords, before.keywordsEn, before.mustInclude]) !== JSON.stringify([next.keywords, next.keywordsEn, next.mustInclude]);
+  const task = ensureTask({
+    ...next,
+    queries: changed ? [] : next.queries,
+    assignment: changed ? "" : next.assignment,
+  });
+  return { ...next, queries: task.queries, assignment: task.assignment };
 }
 
 async function acceptPlan(deps: AppDeps, theme: ThemeFile, keywords: string[], platforms: string[], folderPath: string): Promise<ThemeFile> {

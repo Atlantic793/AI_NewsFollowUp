@@ -7,6 +7,7 @@ export type { DigestBrief, DigestItem } from "./digest.js";
 export {
   blockedByExclude,
   buildQueries,
+  ensureTask,
   freshnessDrop,
   isCluePlatform,
   OPEN_CAP,

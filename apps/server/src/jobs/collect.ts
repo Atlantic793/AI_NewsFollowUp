@@ -1,6 +1,7 @@
 import {
   buildQueries,
   composeDigestLead,
+  ensureTask,
   countVerdicts,
   dedupeByUrl,
   formatWindowLead,
@@ -48,7 +49,7 @@ export async function runCollection(
   kind: JobState["kind"],
   nominalDate: string | null,
   onStep: (steps: JobStep[], phase: PhaseName) => void,
-): Promise<string> {
+): Promise<{ snapshotId: string; halted: string | null }> {
   const theme = await readTheme(folder);
   if (theme.status !== "confirmed") throw bad(409, "PLAN_NOT_CONFIRMED", "请先同意调研方案。");
   const prior = await listSnapshots(folder);
@@ -56,7 +57,16 @@ export async function runCollection(
     throw bad(409, "NO_SNAPSHOT", "请先完成一次调研。");
   }
   const selected = theme.platforms.filter((platform) => platform.selected).map((platform) => platform.command);
-  const queries = buildQueries({ keywords: theme.keywords, keywordsEn: theme.keywordsEn, mustInclude: theme.mustInclude });
+  const task = ensureTask(theme);
+  if (theme.queries.join("\n") !== task.queries.join("\n") || theme.assignment !== task.assignment) {
+    theme.queries = task.queries;
+    theme.assignment = task.assignment;
+    theme.updatedAt = formatIso(deps.now(), deps.timeZone);
+    await writeTheme(theme);
+  }
+  const queries = task.queries.length > 0
+    ? task.queries
+    : buildQueries({ keywords: theme.keywords, keywordsEn: theme.keywordsEn, mustInclude: theme.mustInclude });
   const catalog = await discoverCatalog(deps, false);
   const known = new Set(catalog.commands.map((entry) => entry.command));
   const steps: JobStep[] = [];
@@ -64,6 +74,7 @@ export async function runCollection(
     for (const keyword of queries) steps.push({ command, keyword, state: "pending" });
   }
   const run = createRun(onStep, steps, deps);
+  run.charge("采集");
   run.emit();
 
   const results: PlatformResult[] = [];
@@ -79,12 +90,13 @@ export async function runCollection(
     }
   });
   await Promise.all(workers);
-  const browsed = await collectBrowsers(deps, topicId, selected, queries, steps, run);
+  const browsed = run.halted() ? [] : await collectBrowsers(deps, topicId, selected, queries, steps, run);
   results.push(...browsed);
   for (const result of browsed) {
     await appendTrace(deps, topicId, { action: "search", phase: "采集", command: result.command, count: result.itemCount, note: result.status });
   }
 
+  if (results.some((result) => result.items.length > 0)) run.markProgress();
   run.charge("清洗去重");
   run.emit();
   const gathered = dedupeByUrl(results.flatMap((result) => result.items)).map((item, index) => ({
@@ -168,7 +180,7 @@ export async function runCollection(
   run.emit();
   const explained = sources.length === 0
     ? { lead: "", items: [] as DigestItem[], followups: [] as string[] }
-    : await explainItems(deps, sources, { utterance: theme.utterance, audience: theme.audience });
+    : await explainItems(deps, sources, { utterance: theme.utterance, audience: theme.audience, assignment: theme.assignment });
   const digest = { ...explained, lead: composeDigestLead(countLead, explained.lead) };
   const body = renderDigest({
     name: theme.utterance,
@@ -222,7 +234,7 @@ export async function runCollection(
     theme.updatedAt = collectedAt;
     await writeTheme(theme);
   }
-  return id;
+  return { snapshotId: id, halted: run.halted() };
 }
 
 function researchSources(events: SnapshotFile["events"], items: SnapshotFile["items"], limit: number): ExplainSource[] {
@@ -291,17 +303,22 @@ async function collectAdapter(
     return { command, transport: "adapter", status: "failed", error: "命令不在当前清单。", itemCount: 0, items: [] };
   }
   const items: RawItem[] = [];
+  let error = "";
   for (const keyword of keywords) {
-    run.charge("采集");
+    if (!run.beat()) break;
     markOne(steps, command, keyword, "running", run.emit);
     const result = await runSearchCommand(deps, command, keyword);
     if (!result.ok) {
-      markSteps(steps, command, "failed", run.emit);
-      return { command, transport: "adapter", status: "failed", error: result.message, itemCount: 0, items: [] };
+      error = result.message;
+      markOne(steps, command, keyword, "failed", run.emit);
+      continue;
     }
-    items.push(...genericNormalize(result.data, command));
+    const found = genericNormalize(result.data, command);
+    items.push(...found);
+    if (found.length > 0) run.markProgress();
     markOne(steps, command, keyword, "success", run.emit);
   }
+  if (items.length === 0 && error) return { command, transport: "adapter", status: "failed", error, itemCount: 0, items: [] };
   return { command, transport: "adapter", status: "success", itemCount: items.length, items };
 }
 
@@ -340,8 +357,9 @@ async function collectRecipe(
 ): Promise<PlatformResult> {
   const command = `browser:${recipe.id}`;
   const items: RawItem[] = [];
+  let error = "";
   for (const keyword of keywords) {
-    run.charge("采集");
+    if (!run.beat()) break;
     markOne(steps, command, keyword, "running", run.emit);
     const url = recipe.searchUrl(keyword);
     const opened = await deps.runner.run(["opencli", "browser", "open", url, "--session", session], 90_000);
@@ -349,24 +367,32 @@ async function collectRecipe(
     const text = stated.code === 0 ? await deps.runner.run(["opencli", "browser", "get", "text", "--session", session], 30_000) : stated;
     const envelope = text.code === 0 ? readEnvelope(text.stdout) : { ok: false as const, message: "浏览器没有打开页面。" };
     if (!envelope.ok) {
-      markSteps(steps, command, "failed", run.emit);
-      return { command, transport: "browser", status: "failed", error: envelope.message, itemCount: 0, items: [] };
+      error = envelope.message;
+      markOne(steps, command, keyword, "failed", run.emit);
+      continue;
     }
     const pageText = typeof envelope.data === "string" ? envelope.data : JSON.stringify(envelope.data ?? "");
     try {
-      items.push(...recipe.normalize(pageText, url, command));
+      const found = recipe.normalize(pageText, url, command);
+      items.push(...found);
+      if (found.length > 0) run.markProgress();
     } catch {
-      markSteps(steps, command, "failed", run.emit);
-      return { command, transport: "browser", status: "failed", error: "页面没能收成统一条目。", itemCount: 0, items: [] };
+      error = "页面没能收成统一条目。";
+      markOne(steps, command, keyword, "failed", run.emit);
+      continue;
     }
     markOne(steps, command, keyword, "success", run.emit);
   }
+  if (items.length === 0 && error) return { command, transport: "browser", status: "failed", error, itemCount: 0, items: [] };
   return { command, transport: "browser", status: "success", itemCount: items.length, items };
 }
 
 interface CollectionRun {
   emit: () => void;
   charge: (phase: PhaseName) => void;
+  beat: () => boolean;
+  markProgress: () => void;
+  halted: () => string | null;
 }
 
 function createRun(onStep: (steps: JobStep[], phase: PhaseName) => void, steps: JobStep[], deps: AppDeps): CollectionRun {
@@ -374,20 +400,43 @@ function createRun(onStep: (steps: JobStep[], phase: PhaseName) => void, steps: 
   const startedMs = Date.now();
   let phase: PhaseName = "采集";
   let used = 0;
+  let progressed = false;
+  let halted: string | null = null;
+  const entered = new Set<PhaseName>();
   const emit = () => onStep(steps, phase);
+  const stop = (reason: string) => {
+    const error = new BudgetStop(phase, reason);
+    if (!progressed) {
+      emit();
+      throw error;
+    }
+    halted = error.message;
+    emit();
+  };
   const charge = (next: PhaseName) => {
+    if (halted) return;
     phase = next;
-    if (used >= limits.jobSteps) {
-      emit();
-      throw new BudgetStop(phase, "超过步数上限");
-    }
     if (Date.now() - startedMs >= limits.jobWallMs) {
-      emit();
-      throw new BudgetStop(phase, "超过时间上限");
+      stop("超过时间上限");
+      return;
     }
+    if (entered.has(next)) return;
+    if (used >= limits.jobSteps) {
+      stop("超过步数上限");
+      return;
+    }
+    entered.add(next);
     used += 1;
   };
-  return { emit, charge };
+  const beat = () => {
+    if (halted) return false;
+    if (Date.now() - startedMs >= limits.jobWallMs) {
+      stop("超过时间上限");
+      return false;
+    }
+    return true;
+  };
+  return { emit, charge, beat, markProgress: () => { progressed = true; }, halted: () => halted };
 }
 
 function buildEvents(items: SnapshotFile["items"]): SnapshotFile["events"] {

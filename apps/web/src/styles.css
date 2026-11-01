@@ -758,6 +758,16 @@ input.bench-find[type="text"]:focus { outline: none; border-bottom-color: #11111
 .talk-log small { color: var(--muted); }
 .talk-log p { margin: 2px 0 0; white-space: pre-wrap; font-size: 14px; }
 .talk-log a { color: var(--blue); font-size: 12px; word-break: break-all; }
+.ask { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.ask fieldset { margin: 0; padding: 0; border: 0; }
+.ask legend { padding: 0; font-size: 13px; color: var(--muted); }
+.ask-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.ask-options button, .ask > button { border: 1px solid var(--line); border-radius: 999px; background: transparent; padding: 4px 10px; font: inherit; font-size: 13px; }
+.ask-options button.on { background: #111; color: #fff; border-color: #111; }
+.ask input { margin-top: 6px; width: 100%; box-sizing: border-box; }
+.ask > button { align-self: flex-start; color: var(--blue); }
+.ask > button:disabled { color: var(--muted); }
+.ask-locked { color: var(--muted); }
 .talk form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
 .talk textarea { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; resize: none; background: #fff; }
 .talk form button { border: 0; border-radius: 10px; background: #111; color: #fff; padding: 8px 12px; }
