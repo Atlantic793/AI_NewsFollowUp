@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { request } from "./api";
 import { CountPills, DeskFrame, Icon, LogTable, Pipeline, SettingRow, StoryCard } from "./desk";
@@ -63,16 +63,6 @@ interface Overview {
   halted?: string | null;
 }
 
-interface BriefView {
-  text: string;
-  trigger?: "collect" | "research" | "track" | "morning";
-  hasVerdicts: boolean;
-  baselineLabel: string;
-  collectedAt: string;
-  verdicts: (Claim & { kind: GroupKey })[];
-  newSources: { title: string; url: string; platform: string }[];
-}
-
 interface TreeEntry { path: string; kind: string; children?: { path: string }[] }
 interface ChatMessage { id: string; role: "user" | "assistant"; content: string; citations: { type: string; path?: string; url?: string }[] }
 interface JobStep { command: string; state: "pending" | "running" | "success" | "failed" }
@@ -93,16 +83,15 @@ const GROUPS = [
 ] as const;
 
 type GroupKey = (typeof GROUPS)[number][0];
-type Tab = "overview" | "control" | "summary";
+type Center = "board" | "settings";
 
 export function Workspace() {
   const { id = "" } = useParams();
   const [payload, setPayload] = useState<TopicPayload | null>(null);
-  const [tab, setTab] = useState<Tab>("overview");
+  const [center, setCenter] = useState<Center>("board");
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [loginChecking, setLoginChecking] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
-  const [brief, setBrief] = useState<BriefView | null>(null);
   const [tree, setTree] = useState<TreeEntry[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [keywords, setKeywords] = useState<string[]>([]);
@@ -119,6 +108,10 @@ export function Workspace() {
   const [reading, setReading] = useState<Reading | null>(null);
   const [chatText, setChatText] = useState("");
   const [materialUrl, setMaterialUrl] = useState("");
+  const [noteText, setNoteText] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+  const chatLock = useRef(false);
+  const postChatRef = useRef<(text: string) => Promise<void>>(async () => undefined);
   const [formError, setFormError] = useState("");
   const [chatError, setChatError] = useState("");
   const [fileError, setFileError] = useState("");
@@ -131,11 +124,10 @@ export function Workspace() {
   const [editor, setEditor] = useState<"keywords" | "platforms" | "window" | "folder" | null>(null);
   const [logOpen, setLogOpen] = useState(true);
 
-  async function load(initial = false): Promise<JobView | null> {
+  async function load(): Promise<{ job: JobView | null; messages: number }> {
     setLoadError("");
     const next = await request<TopicPayload>(`/api/topics/${id}`);
     setPayload(next);
-    if (initial) setTab(next.defaultTab === "control" ? "control" : "overview");
     setKeywords(next.topic.keywords);
     setKeywordsEn(next.topic.keywordsEn ?? []);
     setMustInclude(next.topic.mustInclude ?? []);
@@ -147,10 +139,9 @@ export function Workspace() {
     setFolderPath(next.topic.folderPath);
     setMorningOn(next.topic.morningReport.enabled);
     setMorningTime(next.topic.morningReport.time ?? "08:00");
-    const [source, status, summary, files, chat, current] = await Promise.all([
+    const [source, status, files, chat, current] = await Promise.all([
       request<{ commands: CatalogEntry[]; loginChecking: boolean }>("/api/catalog"),
       request<Overview>(`/api/topics/${id}/overview`),
-      request<{ brief: BriefView | null }>(`/api/topics/${id}/brief/latest`),
       request<{ entries: TreeEntry[] }>(`/api/topics/${id}/tree`),
       request<{ messages: ChatMessage[] }>(`/api/topics/${id}/chat`),
       request<{ job: JobView | null }>(`/api/topics/${id}/jobs/current`),
@@ -158,23 +149,20 @@ export function Workspace() {
     setCatalog(source.commands);
     setLoginChecking(source.loginChecking);
     setOverview(status);
-    setBrief(summary.brief ?? null);
     setTree(files.entries);
     setMessages(chat.messages);
     setJob(current.job);
     setJobLines(summarizeSteps(current.job?.steps ?? [], current.job?.state === "running"));
     if (current.job?.state === "running") setRunning(true);
-    return current.job;
+    return { job: current.job, messages: chat.messages.length };
   }
 
   async function refreshQuiet() {
     const status = await request<Overview>(`/api/topics/${id}/overview`);
     const files = await request<{ entries: TreeEntry[] }>(`/api/topics/${id}/tree`);
-    const summary = await request<{ brief: BriefView | null }>(`/api/topics/${id}/brief/latest`);
     const next = await request<TopicPayload>(`/api/topics/${id}`);
     setOverview(status);
     setTree(files.entries);
-    setBrief(summary.brief ?? null);
     setPayload(next);
     setFilter(null);
   }
@@ -199,10 +187,20 @@ export function Workspace() {
     setFilter(null);
     setOpenSection(null);
     setEditor(null);
+    setCenter("board");
     setRunning(false);
     setJob(null);
-    load(true).then(async (current) => {
-      if (stop || current?.state !== "running") return;
+    load().then(async (current) => {
+      if (stop) return;
+      const openingKey = `followup-opening:${id}`;
+      const opening = sessionStorage.getItem(openingKey);
+      if (opening && current.messages === 0) {
+        sessionStorage.removeItem(openingKey);
+        await postChatRef.current(opening);
+      } else if (opening) {
+        sessionStorage.removeItem(openingKey);
+      }
+      if (stop || current.job?.state !== "running") return;
       await pollJob();
       if (stop) return;
       await refreshQuiet();
@@ -269,7 +267,7 @@ export function Workspace() {
           body: JSON.stringify({ keywords, platforms, folderPath, morningReport: { enabled: morningOn, time: morningTime }, card: themeCard() }),
         });
       }
-      await load(false);
+      await load();
     } catch (reason) {
       setFormError(reason instanceof Error ? reason.message : "没有保存计划。");
     }
@@ -284,7 +282,7 @@ export function Workspace() {
         setRunning(true);
         await pollJob();
       }
-      await load(false);
+      await load();
     } catch (reason) {
       setFormError(reason instanceof Error ? reason.message : "这次没有留下快照。");
     } finally {
@@ -292,32 +290,44 @@ export function Workspace() {
     }
   }
 
-  async function sendChat() {
-    const text = chatText.trim();
-    if (!text) return;
-    setChatText("");
+  async function postChat(text: string) {
+    const content = text.trim();
+    if (!content || chatLock.current) return;
+    chatLock.current = true;
+    setChatBusy(true);
     setChatError("");
+    setMessages((current) => current.some((message) => message.role === "user" && message.content === content)
+      ? current
+      : [...current, { id: "pending-user", role: "user", content, citations: [] }]);
     try {
       const body = await request<{ messages: ChatMessage[]; pending: TopicPayload["pending"] }>(`/api/topics/${id}/chat`, {
         method: "POST",
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text: content }),
       });
       setMessages(body.messages);
       if (body.pending) {
         setReading(null);
-        setTab("control");
+        setCenter("settings");
         const next = await request<TopicPayload>(`/api/topics/${id}`);
         setPayload(next);
       }
     } catch (reason) {
       setChatError(reason instanceof Error ? reason.message : "对话没有送出。");
-      const chat = await request<{ messages: ChatMessage[] }>(`/api/topics/${id}/chat`);
-      setMessages(chat.messages);
+      setChatText(content);
+      const chat = await request<{ messages: ChatMessage[] }>(`/api/topics/${id}/chat`).catch(() => null);
+      if (chat) setMessages(chat.messages);
+    } finally {
+      chatLock.current = false;
+      setChatBusy(false);
     }
   }
+  postChatRef.current = postChat;
 
-  function selectTab(next: Tab) {
-    setTab(next);
+  async function sendChat() {
+    const text = chatText.trim();
+    if (!text || chatBusy) return;
+    setChatText("");
+    await postChat(text);
   }
 
   async function openFile(relative: string) {
@@ -334,6 +344,7 @@ export function Workspace() {
           briefText: string;
         }>(`/api/topics/${id}/snapshots/${snapshotId}`);
         const items = new Map(body.snapshot.items.map((item) => [item.id, item.url]));
+        setCenter("board");
         setReading({
           path: relative,
           title: fileStamp(relative) ?? relative,
@@ -349,6 +360,7 @@ export function Workspace() {
       }
       const body = await request<{ text: string }>(`/api/topics/${id}/file?path=${encodeURIComponent(relative)}`);
       const raw = relative.startsWith("简报/") ? stripFrontMatter(body.text) : body.text;
+      setCenter("board");
       setReading({
         path: relative,
         title: fileStamp(relative) ?? relative.split("/").pop() ?? relative,
@@ -369,6 +381,19 @@ export function Workspace() {
       await refreshQuiet();
     } catch (reason) {
       setFileError(reason instanceof Error ? reason.message : "没有保存链接。");
+    }
+  }
+
+  async function saveNote() {
+    const text = noteText.trim();
+    if (!text) return;
+    setFileError("");
+    try {
+      await request(`/api/topics/${id}/notes`, { method: "POST", body: JSON.stringify({ text }) });
+      setNoteText("");
+      await refreshQuiet();
+    } catch (reason) {
+      setFileError(reason instanceof Error ? reason.message : "没有记下。");
     }
   }
 
@@ -428,9 +453,15 @@ export function Workspace() {
       morningOn={morningOn}
       morningLocked={morningLocked}
       onMorning={(enabled) => void setMorning(enabled)}
+      settingsOn={!reading && center === "settings"}
+      onSettings={() => {
+        setReading(null);
+        setCenter((current) => current === "settings" ? "board" : "settings");
+      }}
       files={
         <div className="archive">
           <h2>档案</h2>
+          <ArchiveRow icon="board" label="总工作台" count={null} open={!reading && center === "board"} onClick={() => { setReading(null); setCenter("board"); }} />
           <ArchiveRow icon="grid" label="主题说明" count={null} open={reading?.path === "主题.md"} onClick={() => void openFile("主题.md")} />
           {(["简报", "快照", "笔记", "素材"] as const).map((name) => {
             const entry = tree.find((item) => item.path === name);
@@ -445,25 +476,38 @@ export function Workspace() {
                   open={open}
                   onClick={() => setOpenSection(open ? null : name)}
                 />
-                {open && (children.length === 0 ? <p className="archive-empty">空</p> : children.map((child) => {
-                  const label = fileStamp(child.path) ?? child.path.split("/").pop() ?? child.path;
-                  return (
-                    <button className={reading?.path === child.path ? "archive-file on" : "archive-file"} key={child.path} type="button" title={child.path} onClick={() => void openFile(child.path)}>{label}</button>
-                  );
-                }))}
+                {open && (
+                  <>
+                    {children.length === 0 ? <p className="archive-empty">空</p> : children.map((child) => {
+                      const label = fileStamp(child.path) ?? child.path.split("/").pop() ?? child.path;
+                      return (
+                        <button className={reading?.path === child.path ? "archive-file on" : "archive-file"} key={child.path} type="button" title={child.path} onClick={() => void openFile(child.path)}>{label}</button>
+                      );
+                    })}
+                    {name === "笔记" && (
+                      <form className="archive-add" onSubmit={(event) => { event.preventDefault(); void saveNote(); }}>
+                        <textarea value={noteText} onChange={(event) => setNoteText(event.target.value)} rows={3} placeholder="写一条笔记" />
+                        <button type="submit">记下</button>
+                      </form>
+                    )}
+                    {name === "素材" && (
+                      <form className="archive-add" onSubmit={(event) => { event.preventDefault(); void saveUrl(); }}>
+                        <input value={materialUrl} onChange={(event) => setMaterialUrl(event.target.value)} placeholder="保存一条链接" />
+                        <button type="submit">保存</button>
+                      </form>
+                    )}
+                  </>
+                )}
               </div>
             );
           })}
-          <form className="archive-save" onSubmit={(event) => { event.preventDefault(); void saveUrl(); }}>
-            <input value={materialUrl} onChange={(event) => setMaterialUrl(event.target.value)} placeholder="保存一条链接" />
-            <button type="submit">保存</button>
-          </form>
           {fileError && <p className="error">{fileError}</p>}
         </div>
       }
       main={
         <div className="feed">
           {loadError && <p className="error">{loadError}</p>}
+          {formError && <p className="error">{formError}</p>}
           {payload?.pending && (
             <div className="desk-pending">
               <p>将要执行：{pendingLabel(payload.pending)}</p>
@@ -474,7 +518,6 @@ export function Workspace() {
           )}
           {reading ? (
             <article className="reading">
-              <button type="button" onClick={() => setReading(null)}>回到总况</button>
               <h2>{reading.title}</h2>
               {reading.platforms && (
                 <ul className="reading-list">
@@ -491,6 +534,68 @@ export function Workspace() {
               ))}
               {reading.text && <Prose text={reading.text} />}
             </article>
+          ) : center === "settings" ? (
+            <div className="settings-sheet">
+              <h2>设置</h2>
+              <SettingRow icon="key" label="关键词" value={keywords.join("、") || "未设置"} open={editor === "keywords"} onToggle={() => setEditor(editor === "keywords" ? null : "keywords")}>
+                <ChipEditor placeholder="关键词" values={keywords} onChange={setKeywords} />
+                <ChipEditor placeholder="英文检索词，可空" values={keywordsEn} onChange={setKeywordsEn} />
+                <ChipEditor placeholder="必须照看" values={mustInclude} onChange={setMustInclude} />
+                <ChipEditor placeholder="排除" values={excluded} onChange={setExcluded} />
+                {!confirmed && <p className="hint">先在右侧对话里把主题卡谈定，也可以在这里填写。</p>}
+              </SettingRow>
+              <SettingRow icon="users" label="平台" value={platformSummary(platforms)} open={editor === "platforms"} onToggle={() => setEditor(editor === "platforms" ? null : "platforms")}>
+                <div className="platform-scroll">
+                  {catalog.map((entry) => (
+                    <label className={platforms.includes(entry.command) ? "plat on" : "plat"} key={entry.command}>
+                      <input
+                        type="checkbox"
+                        disabled={!entry.selectable}
+                        checked={platforms.includes(entry.command)}
+                        onChange={(event) => setPlatforms(event.target.checked ? [...platforms, entry.command] : platforms.filter((item) => item !== entry.command))}
+                      />
+                      <span>
+                        {entry.command}
+                        {entry.loginState === "not-logged-in" && " · 需要登录"}
+                        {!entry.selectable && (entry.disabledReason === "login-required" ? " · 需要登录，暂不纳入" : " · 暂不能纳入对比")}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </SettingRow>
+              <SettingRow icon="clock" label="时间窗" value={timeWindow === "1d" ? "过去 24 小时" : "过去 7 天"} open={editor === "window"} onToggle={() => setEditor(editor === "window" ? null : "window")}>
+                <div className="choice">
+                  <button type="button" className={timeWindow === "1d" ? "on" : ""} onClick={() => setTimeWindow("1d")}>过去 24 小时</button>
+                  <button type="button" className={timeWindow === "7d" ? "on" : ""} onClick={() => setTimeWindow("7d")}>过去 7 天</button>
+                </div>
+                <label>留下几条
+                  <select value={itemCount} onChange={(event) => setItemCount(Number(event.target.value))}>
+                    <option value={5}>5</option>
+                    <option value={6}>6</option>
+                    <option value={7}>7</option>
+                  </select>
+                </label>
+                <label>写给谁看
+                  <select value={audience} onChange={(event) => setAudience(audienceOf(event.target.value))}>
+                    <option value="学生">学生</option>
+                    <option value="从业者">从业者</option>
+                    <option value="管理层">管理层</option>
+                    <option value="随便看看">随便看看</option>
+                  </select>
+                </label>
+                <label>简报时间
+                  <input type="time" value={morningTime} disabled={morningLocked} onChange={(event) => setMorningTime(event.target.value)} />
+                </label>
+              </SettingRow>
+              <SettingRow icon="folder" label="文件夹" value={folderPath.split(/[/\\]/).pop() || folderPath} open={editor === "folder"} onToggle={() => setEditor(editor === "folder" ? null : "folder")}>
+                <input className="path" value={folderPath} title={folderPath} onChange={(event) => setFolderPath(event.target.value)} />
+                <div className="folder-actions">
+                  <button className="text" type="button" onClick={() => void request(`/api/topics/${id}/folder/open`, { method: "POST" })}>在文件管理器中打开</button>
+                  <button className="text" type="button" onClick={() => void pickFolder()}>改挂文件夹</button>
+                </div>
+              </SettingRow>
+              {confirmed && <button className="text save-plan" type="button" disabled={!canConfirm || running} onClick={() => void confirmPlan()}>保存修改</button>}
+            </div>
           ) : (
             <>
               <Pipeline done={!noSnapshot && !running && !overview?.empty && !halt} running={running} mark={halt || running ? job?.phase ?? "采集" : undefined} caption={halt ?? pipelineCaption(running, noSnapshot, overview, jobLines)} />
@@ -499,7 +604,7 @@ export function Workspace() {
               {!overview || overview.empty ? (
                 <div className="feed-empty">
                   <p>尚未调研。</p>
-                  <button type="button" onClick={() => selectTab("control")}>先把调研方案谈定，再开始第一次调研。</button>
+                  <button type="button" onClick={() => { setReading(null); setCenter("settings"); }}>先把调研方案谈定，再开始第一次调研。</button>
                 </div>
               ) : feed.length === 0 ? (
                 <p className="quiet-line">{filter ? "这一组里没有条目。" : "这次没有可展示的条目。"}</p>
@@ -510,119 +615,33 @@ export function Workspace() {
         </div>
       }
       inspector={
-        <div className="inspector">
-          <div className="seg" role="tablist" aria-label="工作面板">
-            <button type="button" className={tab === "overview" ? "on" : ""} onClick={() => selectTab("overview")}>总况</button>
-            <button type="button" className={tab === "control" ? "on" : ""} onClick={() => selectTab("control")}>调控</button>
-            <button type="button" className={tab === "summary" ? "on" : ""} onClick={() => selectTab("summary")}>概括</button>
+        <div className="talk">
+          <div className="talk-log">
+            {messages.length === 0 && <p className="quiet-line">跟这个主题接着说。</p>}
+            {messages.map((message) => (
+              <article key={message.id}>
+                <small>{message.role === "user" ? "你" : "跟进"}</small>
+                <p>{message.content}</p>
+                {message.citations.map((citation, index) => (
+                  citation.url
+                    ? <a key={`${citation.url}-${index}`} href={citation.url} target="_blank" rel="noopener noreferrer">{citation.url}</a>
+                    : <span key={`${citation.path ?? "cite"}-${index}`}>{citation.path}</span>
+                ))}
+              </article>
+            ))}
           </div>
-          <div className="inspector-body">
-            {tab === "overview" && (
-              <div className="recap">
-                {halt && <p>{halt}</p>}
-                <p>{overview?.baselineLabel || (noSnapshot ? "还没有底稿。" : "这次的结果在中间。")}</p>
-                {overview?.clusteringNote && <p>{overview.clusteringNote}</p>}
-                {(overview?.digestFollowups ?? []).length > 0 && (
-                  <ol>{overview?.digestFollowups?.map((item) => <li key={item}>{item}</li>)}</ol>
-                )}
-              </div>
-            )}
-            {tab === "control" && (
-              <div className="settings">
-                <SettingRow icon="key" label="关键词" value={keywords.join("、") || "未设置"} open={editor === "keywords"} onToggle={() => setEditor(editor === "keywords" ? null : "keywords")}>
-                  <ChipEditor placeholder="关键词" values={keywords} onChange={setKeywords} />
-                  <ChipEditor placeholder="英文检索词，可空" values={keywordsEn} onChange={setKeywordsEn} />
-                  <ChipEditor placeholder="必须照看" values={mustInclude} onChange={setMustInclude} />
-                  <ChipEditor placeholder="排除" values={excluded} onChange={setExcluded} />
-                  {!confirmed && <p className="hint">先在下面的对话里把主题卡谈定，也可以在这里填写。</p>}
-                </SettingRow>
-                <SettingRow icon="users" label="平台" value={platformSummary(platforms)} open={editor === "platforms"} onToggle={() => setEditor(editor === "platforms" ? null : "platforms")}>
-                  <div className="platform-scroll">
-                    {catalog.map((entry) => (
-                      <label className={platforms.includes(entry.command) ? "plat on" : "plat"} key={entry.command}>
-                        <input
-                          type="checkbox"
-                          disabled={!entry.selectable}
-                          checked={platforms.includes(entry.command)}
-                          onChange={(event) => setPlatforms(event.target.checked ? [...platforms, entry.command] : platforms.filter((item) => item !== entry.command))}
-                        />
-                        <span>
-                          {entry.command}
-                          {entry.loginState === "not-logged-in" && " · 需要登录"}
-                          {!entry.selectable && (entry.disabledReason === "login-required" ? " · 需要登录，暂不纳入" : " · 暂不能纳入对比")}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </SettingRow>
-                <SettingRow icon="clock" label="时间窗" value={timeWindow === "1d" ? "过去 24 小时" : "过去 7 天"} open={editor === "window"} onToggle={() => setEditor(editor === "window" ? null : "window")}>
-                  <div className="choice">
-                    <button type="button" className={timeWindow === "1d" ? "on" : ""} onClick={() => setTimeWindow("1d")}>过去 24 小时</button>
-                    <button type="button" className={timeWindow === "7d" ? "on" : ""} onClick={() => setTimeWindow("7d")}>过去 7 天</button>
-                  </div>
-                  <label>留下几条
-                    <select value={itemCount} onChange={(event) => setItemCount(Number(event.target.value))}>
-                      <option value={5}>5</option>
-                      <option value={6}>6</option>
-                      <option value={7}>7</option>
-                    </select>
-                  </label>
-                  <label>写给谁看
-                    <select value={audience} onChange={(event) => setAudience(audienceOf(event.target.value))}>
-                      <option value="学生">学生</option>
-                      <option value="从业者">从业者</option>
-                      <option value="管理层">管理层</option>
-                      <option value="随便看看">随便看看</option>
-                    </select>
-                  </label>
-                  <label>简报时间
-                    <input type="time" value={morningTime} disabled={morningLocked} onChange={(event) => setMorningTime(event.target.value)} />
-                  </label>
-                </SettingRow>
-                <SettingRow icon="folder" label="文件夹" value={folderPath.split(/[/\\]/).pop() || folderPath} open={editor === "folder"} onToggle={() => setEditor(editor === "folder" ? null : "folder")}>
-                  <input className="path" value={folderPath} title={folderPath} onChange={(event) => setFolderPath(event.target.value)} />
-                  <div className="folder-actions">
-                    <button className="text" type="button" onClick={() => void request(`/api/topics/${id}/folder/open`, { method: "POST" })}>在文件管理器中打开</button>
-                    <button className="text" type="button" onClick={() => void pickFolder()}>改挂文件夹</button>
-                  </div>
-                </SettingRow>
-                {confirmed && <button className="text save-plan" type="button" disabled={!canConfirm || running} onClick={() => void confirmPlan()}>保存修改</button>}
-                {formError && <p className="error">{formError}</p>}
-              </div>
-            )}
-            {tab === "summary" && (
-              <div className="recap">
-                {!brief ? <p>还没有简报。</p> : <Prose text={brief.text || brief.baselineLabel || "还没有简报。"} />}
-              </div>
-            )}
-          </div>
-          <div className="talk">
-            <div className="talk-log">
-              {messages.map((message) => (
-                <article key={message.id}>
-                  <small>{message.role === "user" ? "你" : "跟进"}</small>
-                  <p>{message.content}</p>
-                  {message.citations.map((citation, index) => (
-                    citation.url
-                      ? <a key={`${citation.url}-${index}`} href={citation.url} target="_blank" rel="noopener noreferrer">{citation.url}</a>
-                      : <span key={`${citation.path ?? "cite"}-${index}`}>{citation.path}</span>
-                  ))}
-                </article>
-              ))}
-            </div>
-            {chatError && <p className="error">{chatError}</p>}
-            <form onSubmit={(event) => { event.preventDefault(); void sendChat(); }}>
-              <textarea value={chatText} onChange={(event) => setChatText(event.target.value)} rows={2} placeholder="问问这个主题" />
-              <button type="submit">发送</button>
-            </form>
-          </div>
+          {chatError && <p className="error">{chatError}</p>}
+          <form onSubmit={(event) => { event.preventDefault(); void sendChat(); }}>
+            <textarea value={chatText} onChange={(event) => setChatText(event.target.value)} rows={3} placeholder="问问这个主题" disabled={chatBusy} />
+            <button type="submit" disabled={chatBusy || !chatText.trim()}>发送</button>
+          </form>
         </div>
       }
     />
   );
 }
 
-function ArchiveRow(props: { icon: "grid" | "check" | "note" | "clip"; label: string; count: number | null; open: boolean; onClick: () => void }) {
+function ArchiveRow(props: { icon: "grid" | "check" | "note" | "clip" | "board"; label: string; count: number | null; open: boolean; onClick: () => void }) {
   return (
     <button className={props.open ? "archive-row on" : "archive-row"} type="button" onClick={props.onClick}>
       <Icon name={props.icon} />

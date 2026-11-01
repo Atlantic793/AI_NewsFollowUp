@@ -141,7 +141,7 @@ async function replyDiscuss(deps: AppDeps, topicId: string, folder: string, inte
 
 async function replyOrganize(deps: AppDeps, topicId: string, folder: string, theme: ThemeFile, intent: ModelIntent) {
   if (theme.status !== "confirmed") {
-    await appendMessage(deps, topicId, { role: "assistant", content: "请先同意调研方案。可以在对话里把方案确定下来，或在调控里点确认计划。", citations: [] });
+    await appendMessage(deps, topicId, { role: "assistant", content: "请先同意调研方案。可以在对话里把方案确定下来，或在设置里点确认计划。", citations: [] });
     return { messages: await readChat(deps, topicId), pending: await readPending(deps, topicId) };
   }
   const preview = await previewNoteTarget(folder, { url: intent.url, materialPath: intent.materialPath });
@@ -197,12 +197,12 @@ async function replyPlan(deps: AppDeps, topicId: string, intent: ModelIntent) {
       audience: intent.audience && audiences.has(intent.audience as ThemeAudience) ? intent.audience : undefined,
     },
   };
-  return placePending(deps, topicId, pending, intent.answer || "请到调控面板确认这份调研方案。", []);
+  return placePending(deps, topicId, pending, intent.answer || "请到设置里确认这份调研方案。", []);
 }
 
 async function replyResearch(deps: AppDeps, topicId: string, folder: string, theme: ThemeFile, intent: ModelIntent) {
   if (theme.status !== "confirmed") {
-    await appendMessage(deps, topicId, { role: "assistant", content: "请先同意调研方案。可以在对话里把方案确定下来，或在调控里点确认计划。", citations: [] });
+    await appendMessage(deps, topicId, { role: "assistant", content: "请先同意调研方案。可以在对话里把方案确定下来，或在设置里点确认计划。", citations: [] });
     return { messages: await readChat(deps, topicId), pending: await readPending(deps, topicId) };
   }
   return rememberAction(deps, topicId, folder, intent, "research");
@@ -210,7 +210,7 @@ async function replyResearch(deps: AppDeps, topicId: string, folder: string, the
 
 async function replyTrack(deps: AppDeps, topicId: string, folder: string, theme: ThemeFile, snapshotCount: number, intent: ModelIntent) {
   if (theme.status !== "confirmed") {
-    await appendMessage(deps, topicId, { role: "assistant", content: "请先同意调研方案。可以在对话里把方案确定下来，或在调控里点确认计划。", citations: [] });
+    await appendMessage(deps, topicId, { role: "assistant", content: "请先同意调研方案。可以在对话里把方案确定下来，或在设置里点确认计划。", citations: [] });
     return { messages: await readChat(deps, topicId), pending: await readPending(deps, topicId) };
   }
   if (snapshotCount === 0) {
@@ -223,7 +223,7 @@ async function replyTrack(deps: AppDeps, topicId: string, folder: string, theme:
 async function rememberAction(deps: AppDeps, topicId: string, folder: string, intent: ModelIntent, type: "research" | "track") {
   const pending: PendingAction = { type, keywords: [], platforms: [], createdAt: deps.now().toISOString() };
   const citations = await verifiedCitations(folder, intent.citations ?? []);
-  return placePending(deps, topicId, pending, intent.answer || "请到调控面板确认这一次动作。", citations);
+  return placePending(deps, topicId, pending, intent.answer || "请到设置里确认这一次动作。", citations);
 }
 
 async function placePending(deps: AppDeps, topicId: string, pending: PendingAction, content: string, citations: StoredChat["citations"]) {
@@ -253,7 +253,7 @@ async function contextMessages(deps: AppDeps, folder: string, theme: ThemeFile, 
   const messages: ChatMessage[] = [
     {
       role: "system",
-      content: "你在帮用户确认主题卡。信息不够就反问，不要催着立刻搜索。平台从 commands 里推荐并说明理由，不能写 commands 以外的名字。方案清楚后 intent 用 propose-plan，keywords 放中文检索词，并尽量给出 keywordsEn、mustInclude、exclude、timeWindow（1d 或 7d）、itemCount（5 到 7）、audience（学生、从业者、管理层、随便看看）。请用户到调控确认。用户要调研时 intent 用 research，已有调研且用户要看时间窗里的热点时 intent 用 track。讨论用 discuss。用户要整理已有链接或素材时 intent 用 organize，url 和 materialPath 只能抄资料里出现的地址，不要假设笔记已经写好。拿不准就不要编新的 intent。不要调用搜索命令。只输出 JSON：{\"intent\":\"discuss|propose-plan|research|track|organize\",\"answer\":string,\"citations\":[{\"type\":\"file\",\"path\":string}|{\"type\":\"url\",\"url\":string}],\"keywords\":string[],\"keywordsEn\":string[],\"mustInclude\":string[],\"exclude\":string[],\"timeWindow\":string,\"itemCount\":number,\"audience\":string,\"platforms\":string[],\"url\":string,\"materialPath\":string}。citations 只能抄资料里出现的路径或链接。",
+      content: "你在帮用户确认主题卡。信息不够就反问，不要催着立刻搜索。平台从 commands 里推荐并说明理由，不能写 commands 以外的名字。方案清楚后 intent 用 propose-plan，keywords 放中文检索词，并尽量给出 keywordsEn、mustInclude、exclude、timeWindow（1d 或 7d）、itemCount（5 到 7）、audience（学生、从业者、管理层、随便看看）。请用户到设置确认。用户要调研时 intent 用 research，已有调研且用户要看时间窗里的热点时 intent 用 track。讨论用 discuss。用户要整理已有链接或素材时 intent 用 organize，url 和 materialPath 只能抄资料里出现的地址，不要假设笔记已经写好。拿不准就不要编新的 intent。不要调用搜索命令。只输出 JSON：{\"intent\":\"discuss|propose-plan|research|track|organize\",\"answer\":string,\"citations\":[{\"type\":\"file\",\"path\":string}|{\"type\":\"url\",\"url\":string}],\"keywords\":string[],\"keywordsEn\":string[],\"mustInclude\":string[],\"exclude\":string[],\"timeWindow\":string,\"itemCount\":number,\"audience\":string,\"platforms\":string[],\"url\":string,\"materialPath\":string}。citations 只能抄资料里出现的路径或链接。",
     },
     ...keptHistory,
     {

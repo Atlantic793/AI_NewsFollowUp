@@ -231,6 +231,13 @@ describe("topic follow-up flow", () => {
     });
     expect(empty.status).toBe(400);
     expect(await readdir(path.join(created.topic.folderPath, "笔记"))).toEqual(notesBefore);
+    const handwritten = await app.request(`/api/topics/${created.topic.id}/notes`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "手写的一条笔记" }),
+    });
+    expect(handwritten.status).toBe(200);
+    expect((await readdir(path.join(created.topic.folderPath, "笔记"))).length).toBe(notesBefore.length + 1);
     const noted = await app.request(`/api/topics/${created.topic.id}/notes`, {
       method: "POST",
       headers: { "content-type": "application/json" },

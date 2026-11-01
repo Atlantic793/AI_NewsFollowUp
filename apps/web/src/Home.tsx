@@ -72,6 +72,7 @@ export function Home() {
     setError("");
     try {
       const body = await request<{ topic: { id: string } }>("/api/topics", { method: "POST", body: JSON.stringify({ utterance }) });
+      sessionStorage.setItem(`followup-opening:${body.topic.id}`, utterance.trim());
       navigate(`/topics/${body.topic.id}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "没有建成主题。");

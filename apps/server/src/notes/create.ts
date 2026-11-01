@@ -173,6 +173,21 @@ async function readHttpText(deps: AppDeps, url: string): Promise<string> {
   throw bad(422, "NOTE_UNPARSED", "这份材料还不能解析出正文。");
 }
 
+export async function saveNoteText(deps: AppDeps, folder: string, text: string): Promise<string> {
+  const body = text.trim();
+  if (!body) throw bad(400, "NOTE_EMPTY", "请写下笔记内容。");
+  const truncated = [...body].length > BODY_LIMIT;
+  const kept = truncated ? `${[...body].slice(0, BODY_LIMIT).join("")}\n\n（正文已截断，原长超过 20000 字）` : body;
+  const title = kept.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 24) || "笔记";
+  const safeTitle = title.replace(/[\\/:*?"<>|]/g, "").trim() || "笔记";
+  const existing = new Set(await readdir(path.join(folder, "笔记")).catch(() => []));
+  const stem = snapshotStamp(deps.now(), deps.timeZone, existing);
+  const relative = path.join("笔记", `${stem}-${safeTitle}.md`);
+  const file = `---\nsource: ""\nsourceKind: user\nbodyKind: text\ncreatedAt: ${JSON.stringify(deps.now().toISOString())}\ntruncated: ${truncated}\n---\n\n${kept}\n`;
+  await writeFile(path.join(folder, relative), file, "utf8");
+  return relative.replaceAll("\\", "/");
+}
+
 export async function saveMaterialUrl(deps: AppDeps, folder: string, url: string): Promise<string> {
   const trimmed = url.trim();
   if (!/^https?:\/\//i.test(trimmed)) throw bad(400, "NOTE_EMPTY", "请给出一条链接。");
