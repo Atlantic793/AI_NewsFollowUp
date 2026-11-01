@@ -11,12 +11,13 @@ function ok(data: unknown): CommandResult {
 }
 
 function row(url: string) {
-  return { title: "同一件事", url, pubdate_ts: Math.floor(Date.parse("2026-10-25T08:00:00+08:00") / 1000), desc: "摘要" };
+  return { title: "同一件事", url, pubdate_ts: Math.floor(Date.parse("2026-10-25T08:00:00+08:00") / 1000), desc: "摘要里提到本地模型" };
 }
 
 function scriptedDeps(root: string, recipes: AppDeps["recipes"] = [], limits?: AppDeps["limits"]) {
   let now = new Date("2026-10-25T10:00:00+08:00");
   let searches = 0;
+  let customRows: (() => unknown[]) | null = null;
   let chatDelay = 0;
   let modelCalls = 0;
   let chatReply = JSON.stringify({
@@ -94,6 +95,7 @@ function scriptedDeps(root: string, recipes: AppDeps["recipes"] = [], limits?: A
           ]);
         }
         if (argv[1] === "alpha" && argv[2] === "search") {
+          if (customRows) return ok(customRows());
           searches += 1;
           const urls = searches === 1 ? [row("https://alpha.test/1")] : [row("https://alpha.test/1"), row("https://alpha.test/2"), row("https://alpha.test/3")];
           return ok(urls);
@@ -113,6 +115,9 @@ function scriptedDeps(root: string, recipes: AppDeps["recipes"] = [], limits?: A
     },
     setChat(value: string) {
       chatReply = value;
+    },
+    setRows(value: () => unknown[]) {
+      customRows = value;
     },
     setChatDelay(value: number) {
       chatDelay = value;
@@ -580,6 +585,166 @@ describe("topic follow-up flow", () => {
     }));
     expect(chat.messages.at(-1)?.content).toBe("已停在对话·超过内容上限");
     expect(modelCalls()).toBe(0);
+  });
+
+  it("drops undated and out-of-window rows from a research brief but keeps them on the snapshot", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "followup-"));
+    const { app, setRows, setChat } = scriptedDeps(root);
+    const keptTime = Math.floor(Date.parse("2026-10-25T08:00:00+08:00") / 1000);
+    const oldTime = Math.floor(Date.parse("2026-10-01T08:00:00+08:00") / 1000);
+    setRows(() => [
+      { title: "窗内的本地模型", url: "https://alpha.test/kept", pubdate_ts: keptTime, desc: "摘要提到本地模型" },
+      { title: "太早的本地模型", url: "https://alpha.test/old", pubdate_ts: oldTime, desc: "摘要提到本地模型" },
+      { title: "没有日期的本地模型", url: "https://alpha.test/nodate", desc: "摘要提到本地模型" },
+      { title: "跑题报道", url: "https://alpha.test/off", pubdate_ts: keptTime, desc: "和主题无关" },
+    ]);
+    const created = await json<{ topic: { id: string; folderPath: string } }>(await app.request("/api/topics", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ utterance: "筛选调研" }),
+    }));
+    await app.request(`/api/topics/${created.topic.id}/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ keywords: ["本地模型"], platforms: ["alpha search"], folderPath: created.topic.folderPath }),
+    });
+    await app.request(`/api/topics/${created.topic.id}/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "research" }),
+    });
+    expect((await waitJob(app, created.topic.id)).state).toBe("succeeded");
+    const view = await json<{ digests: { title: string }[]; digestLead: string }>(await app.request(`/api/topics/${created.topic.id}/overview`));
+    expect(view.digests.map((item) => item.title)).toEqual(["窗内的本地模型"]);
+    expect(view.digestLead).toBe("过去 7 天留下 1 条。丢掉 3 条：过了时间窗 1，没有日期 1，和主题对不上 1。");
+    const brief = await json<{ brief: { text: string } | null }>(await app.request(`/api/topics/${created.topic.id}/brief/latest`));
+    expect(brief.brief?.text).toContain("窗内的本地模型");
+    expect(brief.brief?.text).toContain(view.digestLead);
+    expect(brief.brief?.text).not.toContain("太早的本地模型");
+    expect(brief.brief?.text).not.toContain("没有日期的本地模型");
+    expect(brief.brief?.text).not.toContain("跑题报道");
+    const names = (await readdir(path.join(created.topic.folderPath, "快照"))).filter((name) => name.endsWith(".json"));
+    const snapshot = JSON.parse(await readFile(path.join(created.topic.folderPath, "快照", names[0] ?? ""), "utf8")) as {
+      platforms: { status: string }[];
+      items: { url: string; drop?: string }[];
+      events: { title: string }[];
+      digests: { title: string }[];
+    };
+    expect(snapshot.platforms[0]?.status).toBe("success");
+    expect(snapshot.items).toHaveLength(4);
+    expect(snapshot.items.find((item) => item.url.endsWith("/kept"))?.drop).toBeUndefined();
+    expect(snapshot.items.find((item) => item.url.endsWith("/old"))?.drop).toBe("过了时间窗");
+    expect(snapshot.items.find((item) => item.url.endsWith("/nodate"))?.drop).toBe("没有日期");
+    expect(snapshot.items.find((item) => item.url.endsWith("/off"))?.drop).toBe("和主题对不上");
+    expect(snapshot.events.map((event) => event.title)).toEqual(["窗内的本地模型"]);
+    expect(snapshot.digests.map((item) => item.title)).toEqual(["窗内的本地模型"]);
+
+    setChat(JSON.stringify({
+      intent: "propose-plan",
+      answer: "改成一天。",
+      citations: [],
+      keywords: ["本地模型"],
+      platforms: ["alpha search"],
+      timeWindow: "1d",
+      url: "",
+      materialPath: "",
+    }));
+    await app.request(`/api/topics/${created.topic.id}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "改成过去一天" }),
+    });
+    const day = await json<{ topic: { timeWindow: number } }>(await app.request(`/api/topics/${created.topic.id}/pending/confirm`, { method: "POST" }));
+    expect(day.topic.timeWindow).toBe(1);
+    setChat(JSON.stringify({
+      intent: "propose-plan",
+      answer: "改成 14 天。",
+      citations: [],
+      keywords: ["本地模型"],
+      platforms: ["alpha search"],
+      timeWindow: 14,
+      url: "",
+      materialPath: "",
+    }));
+    await app.request(`/api/topics/${created.topic.id}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "改成过去十四天" }),
+    });
+    const fortnight = await json<{ topic: { timeWindow: number } }>(await app.request(`/api/topics/${created.topic.id}/pending/confirm`, { method: "POST" }));
+    expect(fortnight.topic.timeWindow).toBe(14);
+
+    const themePath = path.join(created.topic.folderPath, "主题.md");
+    const stored = await readFile(themePath, "utf8");
+    expect(stored).toContain("timeWindow: 14");
+    await writeFile(themePath, stored.replace("timeWindow: 14", "timeWindow: 7d"), "utf8");
+    const legacy = await json<{ topic: { timeWindow: number } }>(await app.request(`/api/topics/${created.topic.id}`));
+    expect(legacy.topic.timeWindow).toBe(7);
+    const again = await readFile(themePath, "utf8");
+    await writeFile(themePath, again.replace("timeWindow: 7d", "timeWindow: 100"), "utf8");
+    const clamped = await json<{ topic: { timeWindow: number } }>(await app.request(`/api/topics/${created.topic.id}`));
+    expect(clamped.topic.timeWindow).toBe(90);
+  });
+
+  it("keeps a plain title when Firecrawl body matches and drops a headline the body does not support", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "followup-"));
+    const previous = process.env.FIRECRAWL_API_KEY;
+    process.env.FIRECRAWL_API_KEY = "fc-test-key";
+    const opened: string[] = [];
+    try {
+      const { app, deps, setRows } = scriptedDeps(root);
+      deps.fetchImpl = async (input, init) => {
+        const target = String(input);
+        if (!target.includes("api.firecrawl.dev")) return new Response("", { status: 500 });
+        const request = JSON.parse(String(init?.body ?? "{}")) as { url?: string };
+        opened.push(request.url ?? "");
+        const markdown = request.url?.endsWith("/headline") ? "全文是天气预报" : "这篇在讲本地模型怎么部署";
+        return new Response(JSON.stringify({ success: true, data: { markdown } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      };
+      const keptTime = Math.floor(Date.parse("2026-10-25T08:00:00+08:00") / 1000);
+      const oldTime = Math.floor(Date.parse("2026-10-01T08:00:00+08:00") / 1000);
+      setRows(() => [
+        { title: "今天的消息", url: "https://alpha.test/body", pubdate_ts: keptTime, desc: "短讯" },
+        { title: "本地模型震惊", url: "https://alpha.test/headline", pubdate_ts: keptTime, desc: "本地模型" },
+        { title: "太早的本地模型", url: "https://alpha.test/old", pubdate_ts: oldTime, desc: "本地模型" },
+      ]);
+      const created = await json<{ topic: { id: string; folderPath: string } }>(await app.request("/api/topics", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ utterance: "正文筛选" }),
+      }));
+      await app.request(`/api/topics/${created.topic.id}/confirm`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ keywords: ["本地模型"], platforms: ["alpha search"], folderPath: created.topic.folderPath }),
+      });
+      await app.request(`/api/topics/${created.topic.id}/jobs`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "research" }),
+      });
+      expect((await waitJob(app, created.topic.id)).state).toBe("succeeded");
+      const view = await json<{ digests: { title: string }[]; digestLead: string }>(await app.request(`/api/topics/${created.topic.id}/overview`));
+      expect(view.digests.map((item) => item.title)).toEqual(["今天的消息"]);
+      expect(view.digestLead).toContain("过去 7 天留下 1 条");
+      expect(view.digestLead).toContain("和主题对不上 1");
+      expect(view.digestLead).toContain("过了时间窗 1");
+      const names = (await readdir(path.join(created.topic.folderPath, "快照"))).filter((name) => name.endsWith(".json"));
+      const snapshot = JSON.parse(await readFile(path.join(created.topic.folderPath, "快照", names[0] ?? ""), "utf8")) as {
+        items: { url: string; drop?: string }[];
+      };
+      expect(opened).toEqual(["https://alpha.test/body", "https://alpha.test/headline"]);
+      expect(snapshot.items.find((item) => item.url.endsWith("/body"))?.drop).toBeUndefined();
+      expect(snapshot.items.find((item) => item.url.endsWith("/headline"))?.drop).toBe("和主题对不上");
+      expect(snapshot.items.find((item) => item.url.endsWith("/old"))?.drop).toBe("过了时间窗");
+      expect(JSON.stringify(snapshot)).not.toContain("fc-test-key");
+    } finally {
+      if (previous === undefined) delete process.env.FIRECRAWL_API_KEY;
+      else process.env.FIRECRAWL_API_KEY = previous;
+    }
   });
 });
 

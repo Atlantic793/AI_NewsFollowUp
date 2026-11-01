@@ -6,12 +6,13 @@ import type { CommandResult, CommandRunner } from "../types.js";
 const ok = (data: unknown): CommandResult => ({ code: 0, stdout: JSON.stringify({ ok: true, data }), stderr: "" });
 
 export function managedRunner(workerEntry?: URL): CommandRunner & { close(): void } {
-  const collector = new WorkerClient(workerEntry);
+  const catalog = new WorkerClient(workerEntry);
+  const searchers = [new WorkerClient(workerEntry), new WorkerClient(workerEntry)].map((client) => ({ client, depth: 0 }));
   const legacy = spawnRunner();
   const logins = new Set<WorkerClient>();
   return {
     cacheKey: RUNTIME_KEY,
-    catalog: (refresh = false) => collector.request<AdapterCommand[]>({ operation: "catalog" }, 15_000, refresh),
+    catalog: (refresh = false) => catalog.request<AdapterCommand[]>({ operation: "catalog" }, 15_000, refresh),
     async run(argv, timeoutMs) {
       if (argv[0] !== "opencli") throw new Error("只允许 OpenCLI 采集命令。");
       if (argv.length === 2 && argv[1] === "--version") return { code: 0, stdout: OPENCLI_VERSION, stderr: "" };
@@ -29,11 +30,22 @@ export function managedRunner(workerEntry?: URL): CommandRunner & { close(): voi
           return legacy.run(argv, timeoutMs);
         }
         if (argv.length !== 6 || argv[4] !== "-f" || argv[5] !== "json") throw new Error("不支持的采集命令。");
-        return ok(await collector.request({ operation: "search", command: `${argv[1]} ${argv[2]}`, keyword: argv[3] ?? "" }, timeoutMs));
+        const lane = searchers.reduce((least, item) => item.depth < least.depth ? item : least);
+        lane.depth += 1;
+        try {
+          return ok(await lane.client.request({ operation: "search", command: `${argv[1]} ${argv[2]}`, keyword: argv[3] ?? "" }, timeoutMs));
+        } finally {
+          lane.depth -= 1;
+        }
       } catch (error) {
         return { code: 1, stdout: JSON.stringify({ ok: false, error: { message: error instanceof Error ? error.message : "采集失败。" } }), stderr: "" };
       }
     },
-    close() { collector.close(); for (const login of logins) login.close(); logins.clear(); },
+    close() {
+      catalog.close();
+      for (const lane of searchers) lane.client.close();
+      for (const login of logins) login.close();
+      logins.clear();
+    },
   };
 }

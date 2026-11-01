@@ -74,13 +74,61 @@ export function buildQueries(input: {
   for (const keyword of input.keywords) {
     for (const entity of input.mustInclude) push(`${keyword} ${entity}`);
   }
-  for (const entity of input.mustInclude) push(entity);
   return queries;
+}
+
+export type DropReason = "没有日期" | "过了时间窗" | "和主题对不上" | "未打开";
+
+export const OPEN_CAP = 12;
+
+export interface WindowDropCounts {
+  outside: number;
+  noDate: number;
+  offTopic: number;
+}
+
+export function screenByWindow<T extends { title: string; summary: string; publishedAt: string }>(input: {
+  now: Date;
+  days: number;
+  keywords: readonly string[];
+  mustInclude: readonly string[];
+  exclude: readonly string[];
+  items: readonly T[];
+}): { kept: T[]; marked: { item: T; drop?: DropReason }[]; counts: WindowDropCounts } {
+  const needles = [...input.keywords, ...input.mustInclude].map((term) => term.trim().toLocaleLowerCase()).filter(Boolean);
+  const counts: WindowDropCounts = { outside: 0, noDate: 0, offTopic: 0 };
+  const marked: { item: T; drop?: DropReason }[] = [];
+  for (const item of input.items) {
+    const drop = reasonFor(item, input.now, input.days, needles, input.exclude);
+    if (!drop) {
+      marked.push({ item });
+      continue;
+    }
+    marked.push({ item, drop });
+    switch (drop) {
+      case "没有日期":
+        counts.noDate += 1;
+        break;
+      case "过了时间窗":
+        counts.outside += 1;
+        break;
+      case "和主题对不上":
+        counts.offTopic += 1;
+        break;
+      case "未打开":
+        break;
+      default: {
+        const unreachable: never = drop;
+        return unreachable;
+      }
+    }
+  }
+  return { kept: marked.flatMap((row) => (row.drop ? [] : [row.item])), marked, counts };
 }
 
 export function selectHotspots(input: {
   now: Date;
-  timeWindow: "1d" | "7d";
+  timeWindow: number;
   itemCount: number;
   mustInclude: readonly string[];
   exclude: readonly string[];
@@ -89,14 +137,10 @@ export function selectHotspots(input: {
   mode: "hotspot" | "daily";
 }): HotspotSelection {
   const allowed = input.candidates.filter((candidate) => !blockedByExclude(candidate.title, candidate.summary, input.exclude));
-  const dated = allowed.flatMap((candidate) => {
+  const pool = allowed.flatMap((candidate) => {
     const age = ageHours(candidate.publishedAt, input.now);
-    return age === null ? [] : [{ candidate, age }];
+    return age !== null && age <= input.timeWindow * 24 ? [candidate] : [];
   });
-  const fresh = dated.filter((item) => item.age <= 24).map((item) => item.candidate);
-  const wider = dated.filter((item) => item.age <= 24 * 7).map((item) => item.candidate);
-  const expand = input.timeWindow === "7d" && fresh.length < input.itemCount;
-  const pool = expand ? wider : fresh;
   const ranked = pool
     .flatMap((candidate) => scoreCandidate(candidate, input.now, input.mustInclude))
     .sort((left, right) => right.score - left.score || left.title.localeCompare(right.title, "zh"));
@@ -109,9 +153,68 @@ export function selectHotspots(input: {
   const events = unseen.slice(0, Math.min(7, Math.max(5, input.itemCount)));
   return {
     events,
-    windowLabel: expand ? "最近 7 天" : "最近 24 小时",
+    windowLabel: `过去 ${input.timeWindow} 天`,
     quiet: events.length === 0,
   };
+}
+
+export function freshnessDrop(
+  item: { title: string; summary: string; publishedAt: string },
+  now: Date,
+  days: number,
+  exclude: readonly string[],
+): DropReason | null {
+  if (blockedByExclude(item.title, item.summary, exclude)) return "和主题对不上";
+  const age = ageHours(item.publishedAt, now);
+  if (age !== null && age > days * 24) return "过了时间窗";
+  return null;
+}
+
+export function openGate(
+  item: { title: string; summary: string; publishedAt: string },
+  now: Date,
+  days: number,
+  exclude: readonly string[],
+): DropReason | null {
+  const age = ageHours(item.publishedAt, now);
+  if (age === null) return "没有日期";
+  if (age > days * 24) return "过了时间窗";
+  if (blockedByExclude(item.title, item.summary, exclude)) return "和主题对不上";
+  return null;
+}
+
+export function takeToOpen<T>(items: readonly T[], cap = OPEN_CAP): { open: T[]; held: T[] } {
+  return { open: items.slice(0, cap), held: items.slice(cap) };
+}
+
+export function topicDrop(input: {
+  title: string;
+  summary: string;
+  body: string;
+  keywords: readonly string[];
+  mustInclude: readonly string[];
+  exclude: readonly string[];
+}): DropReason | null {
+  const body = input.body.trim();
+  if (blockedByExclude(input.title, `${input.summary}\n${body}`, input.exclude)) return "和主题对不上";
+  const needles = [...input.keywords, ...input.mustInclude].map((term) => term.trim().toLocaleLowerCase()).filter(Boolean);
+  if (needles.length === 0) return null;
+  const corpus = (body || `${input.title}\n${input.summary}`).toLocaleLowerCase();
+  return needles.some((needle) => corpus.includes(needle)) ? null : "和主题对不上";
+}
+
+function reasonFor(
+  item: { title: string; summary: string; publishedAt: string },
+  now: Date,
+  days: number,
+  needles: readonly string[],
+  exclude: readonly string[],
+): DropReason | null {
+  const gated = openGate(item, now, days, exclude);
+  if (gated) return gated;
+  if (needles.length === 0) return null;
+  const text = `${item.title}\n${item.summary}`.toLocaleLowerCase();
+  return needles.some((needle) => text.includes(needle)) ? null : "和主题对不上";
 }
 
 function scoreCandidate(candidate: HotspotCandidate, now: Date, mustInclude: readonly string[]): HotspotRecord[] {

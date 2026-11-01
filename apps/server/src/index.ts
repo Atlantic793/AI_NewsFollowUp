@@ -7,15 +7,17 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { localTimeZone } from "@followup/core";
 import { createApp } from "./app.js";
+import { loadEnvFile } from "./env-file.js";
 import { envModel, rejectSecretArgv } from "./model/client.js";
 import { openFolderInExplorer } from "./opencli/runner.js";
 import { managedRunner } from "./opencli/managed-runner.js";
 import type { AppDeps } from "./types.js";
 
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+loadEnvFile(repoRoot);
 rejectSecretArgv(process.argv);
 
 const port = Number(process.env.PORT ?? 4177);
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const runner = managedRunner();
 const deps: AppDeps = {
   dataDir: process.env.FOLLOWUP_DATA_DIR ?? (process.env.APPDATA ? path.join(process.env.APPDATA, "AI_NewsFollowUp") : path.join(os.homedir(), ".ai-newsfollowup")),

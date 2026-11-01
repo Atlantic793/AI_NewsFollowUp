@@ -25,10 +25,26 @@ export function fallbackDigest(input: {
   }));
   const first = items[0];
   return {
-    lead: `这次留下 ${items.length} 条。`,
+    lead: "",
     items,
     followups: first ? [`读《${first.title}》的原文。`, "对照这几条的日期和来源，看哪一条写了新进展。"] : [],
   };
+}
+
+export function formatWindowLead(days: number, kept: number, drops: { outside: number; noDate: number; offTopic: number }): string {
+  const parts: string[] = [];
+  if (drops.outside > 0) parts.push(`过了时间窗 ${drops.outside}`);
+  if (drops.noDate > 0) parts.push(`没有日期 ${drops.noDate}`);
+  if (drops.offTopic > 0) parts.push(`和主题对不上 ${drops.offTopic}`);
+  const head = `过去 ${days} 天留下 ${kept} 条。`;
+  if (parts.length === 0) return head;
+  const dropped = drops.outside + drops.noDate + drops.offTopic;
+  return `${head}丢掉 ${dropped} 条：${parts.join("，")}。`;
+}
+
+export function composeDigestLead(countLead: string, modelLead: string): string {
+  const extra = modelLead.trim();
+  return extra ? `${countLead}${extra}` : countLead;
 }
 
 export function renderDigest(input: { name: string; date: string; brief: DigestBrief }): string {

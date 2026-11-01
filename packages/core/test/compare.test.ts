@@ -3,6 +3,7 @@ import {
   addCalendarDays,
   applyGroups,
   catchupNominalDate,
+  dateInText,
   dedupeByUrl,
   isInsideFolder,
   validatePlan,
@@ -79,5 +80,20 @@ describe("schedule and plan guards", () => {
       hm: "09:05",
     });
     expect(addCalendarDays("2026-10-26", -1)).toBe("2026-10-25");
+  });
+});
+
+describe("dates written in titles", () => {
+  const now = new Date("2026-11-01T08:00:00+08:00");
+
+  it("reads a Chinese clock time and leaves a bare year alone", () => {
+    const found = dateInText("新浪斯诺克热点小时报 | 2026年11月01日16时", now);
+    expect(found).toBeTruthy();
+    expect(new Date(found ?? "").getFullYear()).toBe(2026);
+    expect(new Date(found ?? "").getMonth()).toBe(10);
+    expect(new Date(found ?? "").getDate()).toBe(1);
+    expect(new Date(found ?? "").getHours()).toBe(16);
+    expect(dateInText("WTT Series 2024 - Wikipedia", now)).toBeNull();
+    expect(dateInText("2 hours ago", now)).toBe(new Date(now.getTime() - 2 * 3_600_000).toISOString());
   });
 });

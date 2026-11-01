@@ -1,3 +1,4 @@
+import { dateInText } from "@followup/core";
 import type { CommandHelp } from "./parse.js";
 import type { RawItem } from "../types.js";
 
@@ -7,6 +8,7 @@ const TIME_KEYS = [
   "pubdate_ts", "pubdate", "published_at", "publishedAt", "published", "publishedOn", "publish_time", "publish_date",
   "postTime", "time", "date", "created_at", "createdAt", "created", "created_utc", "creation_date", "datetime",
   "updated", "updatedAt", "updated_at", "issueDate", "pdate", "premiered", "lastPublished",
+  "page_age", "age",
 ];
 const SUMMARY_KEYS = ["desc", "description", "summary", "snippet", "abstract", "content", "selftext", "text", "intro", "preview", "info", "bio"];
 const CONTEXT_KEYS = ["authors", "author", "journal", "venue", "source", "primary_category", "section"];
@@ -68,7 +70,10 @@ function publishedAt(row: Record<string, unknown>): string | null {
     const millis = raw > 1e12 ? raw : raw * 1000;
     return new Date(millis).toISOString();
   }
-  if (typeof raw === "string" && !Number.isNaN(Date.parse(raw))) return new Date(raw).toISOString();
+  if (typeof raw === "string") {
+    if (!Number.isNaN(Date.parse(raw))) return new Date(raw).toISOString();
+    return dateInText(raw);
+  }
   return null;
 }
 
@@ -93,7 +98,8 @@ export function genericNormalize(data: unknown, platform: string): RawItem[] {
   for (const row of rowsOf(data)) {
     const title = asText(pick(row, TITLE_KEYS));
     const url = asText(pick(row, URL_KEYS));
-    const time = publishedAt(row);
+    const summary = summaryOf(row);
+    const time = publishedAt(row) ?? dateInText(`${title}\n${summary}`);
     if (!title) continue;
     if (!/^https?:\/\//i.test(url)) continue;
     items.push({
@@ -101,7 +107,7 @@ export function genericNormalize(data: unknown, platform: string): RawItem[] {
       url,
       platform,
       publishedAt: time ?? "",
-      summary: summaryOf(row),
+      summary,
     });
   }
   return items;

@@ -23,6 +23,16 @@ describe("search normalization", () => {
     ]);
   });
 
+  it("reads a date written in the title when the row has no time column", () => {
+    const items = genericNormalize({
+      items: [{ title: "新浪斯诺克热点小时报 | 2026年11月01日16时", url: "https://news.example/a", snippet: "赛况" }],
+    }, "brave search");
+    expect(items[0]?.publishedAt).not.toBe("");
+    expect(genericNormalize({
+      items: [{ title: "WTT Series 2024 - Wikipedia", url: "https://en.wikipedia.org/wiki/WTT", snippet: "赛事" }],
+    }, "brave search")[0]?.publishedAt).toBe("");
+  });
+
   it("keeps a paper by turning authors and category into the summary line", () => {
     const items = genericNormalize([{
       title: "WizardLM",

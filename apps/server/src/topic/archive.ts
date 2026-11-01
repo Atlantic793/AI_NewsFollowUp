@@ -5,6 +5,7 @@ import {
   countVerdicts,
   zonedParts,
   type DigestItem,
+  type DropReason,
   type HotspotRecord,
   type NewSource,
   type Verdict,
@@ -14,6 +15,7 @@ import { DIR_BRIEF, DIR_SNAPSHOT, type RawItem } from "../types.js";
 export interface StoredItem extends RawItem {
   id: string;
   eventId: string;
+  drop?: DropReason;
 }
 
 export interface SnapshotFile {

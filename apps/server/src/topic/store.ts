@@ -18,7 +18,7 @@ export interface ThemeCardInput {
   keywordsEn?: string[];
   mustInclude?: string[];
   exclude?: string[];
-  timeWindow?: string;
+  timeWindow?: string | number;
   itemCount?: number;
   audience?: string;
 }
@@ -31,7 +31,7 @@ export interface ThemeFile {
   keywordsEn: string[];
   mustInclude: string[];
   exclude: string[];
-  timeWindow: "1d" | "7d";
+  timeWindow: number;
   itemCount: number;
   audience: ThemeAudience;
   language: "简体中文";
@@ -110,7 +110,7 @@ export function blankThemeCard(): Pick<ThemeFile, "keywordsEn" | "mustInclude" |
     keywordsEn: [],
     mustInclude: [],
     exclude: [],
-    timeWindow: "7d",
+    timeWindow: 7,
     itemCount: 6,
     audience: "随便看看",
     language: "简体中文",
@@ -125,7 +125,7 @@ export function applyThemeCard(theme: ThemeFile, card?: ThemeCardInput): ThemeFi
     keywordsEn: card.keywordsEn ?? theme.keywordsEn,
     mustInclude: card.mustInclude ?? theme.mustInclude,
     exclude: card.exclude ?? theme.exclude,
-    timeWindow: card.timeWindow === "1d" || card.timeWindow === "7d" ? card.timeWindow : theme.timeWindow,
+    timeWindow: card.timeWindow === undefined ? theme.timeWindow : coerceTimeWindow(card.timeWindow, theme.timeWindow),
     itemCount: card.itemCount ?? theme.itemCount,
     audience: audienceOf(card.audience, theme.audience),
   });
@@ -139,7 +139,7 @@ export function coerceTheme(theme: ThemeFile): ThemeFile {
   theme.keywordsEn = wordList(theme.keywordsEn ?? card.keywordsEn);
   theme.mustInclude = wordList(theme.mustInclude ?? card.mustInclude);
   theme.exclude = wordList(theme.exclude ?? card.exclude);
-  theme.timeWindow = theme.timeWindow === "1d" ? "1d" : "7d";
+  theme.timeWindow = coerceTimeWindow(theme.timeWindow);
   const count = Number(theme.itemCount);
   theme.itemCount = count >= 5 && count <= 7 ? Math.round(count) : card.itemCount;
   theme.audience = audiences.has(theme.audience) ? theme.audience : card.audience;
@@ -163,6 +163,27 @@ function audienceOf(value: string | undefined, fallback: ThemeAudience): ThemeAu
     default:
       return fallback;
   }
+}
+
+export function coerceTimeWindow(value: unknown, fallback = 7): number {
+  const parsed = readTimeWindow(value);
+  return clampDays(parsed ?? fallback);
+}
+
+function readTimeWindow(value: unknown): number | null {
+  if (value === "1d") return 1;
+  if (value === "7d") return 7;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (text !== "" && Number.isFinite(Number(text))) return Number(text);
+  }
+  return null;
+}
+
+function clampDays(value: number): number {
+  if (!Number.isFinite(value)) return 7;
+  return Math.min(90, Math.max(1, Math.round(value)));
 }
 
 function wordList(values: readonly string[]): string[] {

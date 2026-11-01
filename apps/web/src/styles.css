@@ -731,7 +731,7 @@ input.bench-find[type="text"]:focus { outline: none; border-bottom-color: #11111
 .log li { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }
 .log em { font-style: normal; color: #666; }
 .log em.bad { color: #c2410c; }
-.settings-sheet { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 8px 18px 18px; max-width: 720px; }
+.settings-sheet { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 8px 18px 18px; }
 .settings-sheet h2 { margin: 12px 4px; font-size: 16px; }
 .set-row { border-bottom: 1px solid var(--line); }
 .set-row > button { width: 100%; display: grid; grid-template-columns: 18px minmax(0, 1fr) 16px; gap: 10px; align-items: center; border: 0; background: #fff; text-align: left; padding: 12px 4px; }
@@ -744,9 +744,11 @@ input.bench-find[type="text"]:focus { outline: none; border-bottom-color: #11111
 .set-body label { justify-content: space-between; }
 .choice button { border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; color: #333; }
 .choice .on { background: #111; color: #fff; border-color: #111; }
-.platform-scroll { max-height: 240px; overflow: auto; display: grid; gap: 6px; }
+.choice input[type="number"] { width: 4.5rem; }
+.platform-panel { max-height: 240px; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px 12px; }
 .plat { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: #444; }
 .plat.on { color: #111; }
+.plat:has(input:disabled) { color: var(--muted); }
 .chips-edit .add-row { display: flex; gap: 6px; }
 .chips-edit input, .set-body input, .set-body select { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: #fff; }
 .recap { display: grid; gap: 8px; color: #333; font-size: 14px; padding: 8px 4px; }

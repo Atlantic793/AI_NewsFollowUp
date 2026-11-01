@@ -8,7 +8,7 @@ import { extractJson } from "../model/json.js";
 import { createNote, previewNoteTarget } from "../notes/create.js";
 import { discoverCatalog } from "../opencli/catalog.js";
 import { listBriefs, listSnapshots } from "../topic/archive.js";
-import { clearPending, readPending, readTheme, topicChatPath, writePending, type PendingAction, type ThemeAudience, type ThemeFile } from "../topic/store.js";
+import { clearPending, coerceTimeWindow, readPending, readTheme, topicChatPath, writePending, type PendingAction, type ThemeAudience, type ThemeFile } from "../topic/store.js";
 import type { AppDeps, ChatMessage } from "../types.js";
 
 interface StoredChat {
@@ -27,7 +27,7 @@ interface ModelIntent {
   keywordsEn?: string[];
   mustInclude?: string[];
   exclude?: string[];
-  timeWindow?: string;
+  timeWindow?: string | number;
   itemCount?: number;
   audience?: string;
   platforms?: string[];
@@ -192,7 +192,7 @@ async function replyPlan(deps: AppDeps, topicId: string, intent: ModelIntent) {
       keywordsEn: intent.keywordsEn ? wordList(intent.keywordsEn) : undefined,
       mustInclude: intent.mustInclude ? wordList(intent.mustInclude) : undefined,
       exclude: intent.exclude ? wordList(intent.exclude) : undefined,
-      timeWindow: intent.timeWindow === "1d" || intent.timeWindow === "7d" ? intent.timeWindow : undefined,
+      timeWindow: cardWindow(intent.timeWindow),
       itemCount: typeof intent.itemCount === "number" ? intent.itemCount : undefined,
       audience: intent.audience && audiences.has(intent.audience as ThemeAudience) ? intent.audience : undefined,
     },
@@ -253,7 +253,7 @@ async function contextMessages(deps: AppDeps, folder: string, theme: ThemeFile, 
   const messages: ChatMessage[] = [
     {
       role: "system",
-      content: "你在帮用户确认主题卡。信息不够就反问，不要催着立刻搜索。平台从 commands 里推荐并说明理由，不能写 commands 以外的名字。方案清楚后 intent 用 propose-plan，keywords 放中文检索词，并尽量给出 keywordsEn、mustInclude、exclude、timeWindow（1d 或 7d）、itemCount（5 到 7）、audience（学生、从业者、管理层、随便看看）。请用户到设置确认。用户要调研时 intent 用 research，已有调研且用户要看时间窗里的热点时 intent 用 track。讨论用 discuss。用户要整理已有链接或素材时 intent 用 organize，url 和 materialPath 只能抄资料里出现的地址，不要假设笔记已经写好。拿不准就不要编新的 intent。不要调用搜索命令。只输出 JSON：{\"intent\":\"discuss|propose-plan|research|track|organize\",\"answer\":string,\"citations\":[{\"type\":\"file\",\"path\":string}|{\"type\":\"url\",\"url\":string}],\"keywords\":string[],\"keywordsEn\":string[],\"mustInclude\":string[],\"exclude\":string[],\"timeWindow\":string,\"itemCount\":number,\"audience\":string,\"platforms\":string[],\"url\":string,\"materialPath\":string}。citations 只能抄资料里出现的路径或链接。",
+      content: "你在帮用户确认主题卡。信息不够就反问，不要催着立刻搜索。平台从 commands 里推荐并说明理由，不能写 commands 以外的名字。方案清楚后 intent 用 propose-plan，keywords 放中文检索词，并尽量给出 keywordsEn、mustInclude、exclude、timeWindow（过去的天数，正整数）、itemCount（5 到 7）、audience（学生、从业者、管理层、随便看看）。请用户到设置确认。用户要调研时 intent 用 research，已有调研且用户要看时间窗里的热点时 intent 用 track。讨论用 discuss。用户要整理已有链接或素材时 intent 用 organize，url 和 materialPath 只能抄资料里出现的地址，不要假设笔记已经写好。拿不准就不要编新的 intent。不要调用搜索命令。只输出 JSON：{\"intent\":\"discuss|propose-plan|research|track|organize\",\"answer\":string,\"citations\":[{\"type\":\"file\",\"path\":string}|{\"type\":\"url\",\"url\":string}],\"keywords\":string[],\"keywordsEn\":string[],\"mustInclude\":string[],\"exclude\":string[],\"timeWindow\":number,\"itemCount\":number,\"audience\":string,\"platforms\":string[],\"url\":string,\"materialPath\":string}。citations 只能抄资料里出现的路径或链接。",
     },
     ...keptHistory,
     {
@@ -302,6 +302,13 @@ async function appendMessage(deps: AppDeps, topicId: string, message: Omit<Store
   await mkdir(path.dirname(file), { recursive: true });
   const row: StoredChat = { ...message, id: crypto.randomUUID(), createdAt: deps.now().toISOString() };
   await appendFile(file, `${JSON.stringify(row)}\n`, "utf8");
+}
+
+function cardWindow(value: unknown): number | undefined {
+  if (value === "1d" || value === "7d") return coerceTimeWindow(value);
+  if (typeof value === "number" && Number.isFinite(value)) return coerceTimeWindow(value);
+  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value.trim()))) return coerceTimeWindow(value);
+  return undefined;
 }
 
 function wordList(values: string[] | undefined): string[] {

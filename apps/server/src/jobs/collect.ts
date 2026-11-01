@@ -1,14 +1,19 @@
 import {
-  blockedByExclude,
   buildQueries,
+  composeDigestLead,
   countVerdicts,
   dedupeByUrl,
+  formatWindowLead,
   isCluePlatform,
   renderDigest,
+  freshnessDrop,
   selectHotspots,
+  takeToOpen,
+  topicDrop,
   titleKey,
   zonedParts,
   type DigestItem,
+  type DropReason,
   type HotspotCandidate,
   type HotspotRecord,
 } from "@followup/core";
@@ -22,6 +27,7 @@ import { readTheme, writeTheme, type ThemeFile } from "../topic/store.js";
 import type { AppDeps, BrowserRecipe, RawItem } from "../types.js";
 import { assignEventKeys } from "./cluster.js";
 import { explainItems, type ExplainSource } from "./explain.js";
+import { firecrawlKey, readPages } from "./pages.js";
 import type { JobState, JobStep } from "./job-store.js";
 import { appendTrace } from "./trace.js";
 
@@ -85,14 +91,52 @@ export async function runCollection(
     ...item,
     id: `i${index + 1}`,
   }));
-  const sourceItems = kind === "track" || kind === "morning"
-    ? gathered.filter((item) => !blockedByExclude(item.title, item.summary, theme.exclude))
-    : gathered;
+  const gated = gathered.map((item) => ({ item, drop: freshnessDrop(item, deps.now(), theme.timeWindow, theme.exclude) ?? undefined }));
+  const eligible = gated.flatMap((row) => (row.drop ? [] : [row.item]));
+  const { open, held } = takeToOpen([...eligible.filter((item) => item.publishedAt), ...eligible.filter((item) => !item.publishedAt)]);
+  const pages = await readPages(deps, open.map((item) => item.url));
+  await appendTrace(deps, topicId, { action: "fetch_pages", phase: "清洗去重", count: open.length, note: firecrawlKey() ? "firecrawl" : "local" });
+  const judged = open.map((item) => {
+    const page = pages.get(item.url);
+    const next = { ...item, publishedAt: item.publishedAt || page?.publishedAt || "" };
+    const drop = !next.publishedAt
+      ? "没有日期" as const
+      : freshnessDrop(next, deps.now(), theme.timeWindow, theme.exclude)
+        ?? topicDrop({
+          title: next.title,
+          summary: next.summary,
+          body: page?.text ?? "",
+          keywords: theme.keywords,
+          mustInclude: theme.mustInclude,
+          exclude: theme.exclude,
+        })
+        ?? undefined;
+    return { item: next, drop };
+  });
+  const kept = judged.flatMap((row) => (row.drop ? [] : [row.item]));
+  const revised = new Map(judged.map((row) => [row.item.id, row.item]));
+  const dropById = new Map<string, DropReason>();
+  for (const row of gated) if (row.drop) dropById.set(row.item.id, row.drop);
+  for (const row of judged) if (row.drop) dropById.set(row.item.id, row.drop);
+  for (const item of held) dropById.set(item.id, item.publishedAt ? "未打开" : "没有日期");
+  const windowCounts = {
+    outside: [...dropById.values()].filter((reason) => reason === "过了时间窗").length,
+    noDate: [...dropById.values()].filter((reason) => reason === "没有日期").length,
+    offTopic: [...dropById.values()].filter((reason) => reason === "和主题对不上").length,
+  };
   run.charge("聚类");
   run.emit();
-  const grouped = await assignEventKeys(sourceItems, deps.model);
-  const storedItems = sourceItems.map((item) => ({ ...item, eventId: grouped.eventKeyById.get(item.id) ?? `solo:${item.id}` }));
-  const events = buildEvents(storedItems);
+  const grouped = await assignEventKeys(kept, deps.model);
+  const storedItems: SnapshotFile["items"] = gathered.map((item) => {
+    const drop = dropById.get(item.id);
+    const stored: SnapshotFile["items"][number] = {
+      ...(revised.get(item.id) ?? item),
+      eventId: drop ? `drop:${item.id}` : grouped.eventKeyById.get(item.id) ?? `solo:${item.id}`,
+    };
+    if (drop) stored.drop = drop;
+    return stored;
+  });
+  const events = buildEvents(storedItems.filter((item) => !item.drop));
   const collectedAt = formatIso(deps.now(), deps.timeZone);
   const currentPlatforms = results.map((result) => ({
     command: result.command,
@@ -115,17 +159,17 @@ export async function runCollection(
       })
     : null;
   const hotspots = selection?.events ?? [];
-  const label = selection
-    ? (selection.quiet ? "这个时间窗里没有新进展。" : `时间窗：${selection.windowLabel}。`)
-    : "这次调研不按时间窗裁剪。";
-  const sources = selection
+  const countLead = formatWindowLead(theme.timeWindow, kept.length, windowCounts);
+  const sources = (selection
     ? hotspots.map((event) => ({ title: event.title, url: event.url, summary: event.summary, platform: event.platforms[0] ?? "" }))
-    : researchSources(events, storedItems, theme.itemCount);
+    : researchSources(events, storedItems, theme.itemCount)
+  ).map((source) => ({ ...source, excerpt: pages.get(source.url)?.text ?? "" }));
   run.charge("分析");
   run.emit();
-  const digest = sources.length === 0
-    ? { lead: label, items: [] as DigestItem[], followups: [] as string[] }
+  const explained = sources.length === 0
+    ? { lead: "", items: [] as DigestItem[], followups: [] as string[] }
     : await explainItems(deps, sources, { utterance: theme.utterance, audience: theme.audience });
+  const digest = { ...explained, lead: composeDigestLead(countLead, explained.lead) };
   const body = renderDigest({
     name: theme.utterance,
     date: zonedParts(deps.now(), deps.timeZone).date,
@@ -148,7 +192,7 @@ export async function runCollection(
       snapshotId: null,
       collectedAt: null,
       comparisonDate: null,
-      label,
+      label: countLead,
     },
     plan: { keywords: theme.keywords, platforms: selected },
     platforms: currentPlatforms,
@@ -166,7 +210,7 @@ export async function runCollection(
     trigger: kind,
     collectedAt,
     hasVerdicts: false,
-    baselineLabel: label,
+    baselineLabel: countLead,
     comparisonDate: null,
     counts,
     verdicts: [],

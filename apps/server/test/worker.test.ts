@@ -80,4 +80,15 @@ describe("collector process", () => {
       expect(last.data.pid).toBe(first.data.pid);
     } finally { runner.close(); }
   });
+
+  it("runs two searches at once on separate processes", async () => {
+    const runner = managedRunner(entry);
+    const run = (keyword: string) => runner.run(["opencli", "fixture", "search", keyword, "-f", "json"], 5_000);
+    try {
+      const [left, right] = await Promise.all([run("delay"), run("delay")]);
+      const first = JSON.parse(left.stdout) as { data: Probe };
+      const second = JSON.parse(right.stdout) as { data: Probe };
+      expect(first.data.pid).not.toBe(second.data.pid);
+    } finally { runner.close(); }
+  });
 });

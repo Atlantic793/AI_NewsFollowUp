@@ -13,7 +13,7 @@ interface TopicPayload {
     keywordsEn?: string[];
     mustInclude?: string[];
     exclude?: string[];
-    timeWindow?: "1d" | "7d";
+    timeWindow?: number | string;
     itemCount?: number;
     audience?: "学生" | "从业者" | "管理层" | "随便看看";
     platforms: { command: string; selected: boolean }[];
@@ -72,6 +72,7 @@ interface Reading {
   title: string;
   platforms: { command: string; status: string; error?: string }[] | null;
   events: { title: string; url: string; platforms: string[] }[] | null;
+  dropped: { title: string; reason: string; publishedAt?: string }[] | null;
   text: string;
 }
 
@@ -98,7 +99,7 @@ export function Workspace() {
   const [keywordsEn, setKeywordsEn] = useState<string[]>([]);
   const [mustInclude, setMustInclude] = useState<string[]>([]);
   const [excluded, setExcluded] = useState<string[]>([]);
-  const [timeWindow, setTimeWindow] = useState<"1d" | "7d">("7d");
+  const [timeWindow, setTimeWindow] = useState(7);
   const [itemCount, setItemCount] = useState(6);
   const [audience, setAudience] = useState<"学生" | "从业者" | "管理层" | "随便看看">("随便看看");
   const [platforms, setPlatforms] = useState<string[]>([]);
@@ -123,6 +124,7 @@ export function Workspace() {
   const [openSection, setOpenSection] = useState<string | null>(null);
   const [editor, setEditor] = useState<"keywords" | "platforms" | "window" | "folder" | null>(null);
   const [logOpen, setLogOpen] = useState(true);
+  const platformRef = useRef<HTMLDivElement>(null);
 
   async function load(): Promise<{ job: JobView | null; messages: number }> {
     setLoadError("");
@@ -132,7 +134,7 @@ export function Workspace() {
     setKeywordsEn(next.topic.keywordsEn ?? []);
     setMustInclude(next.topic.mustInclude ?? []);
     setExcluded(next.topic.exclude ?? []);
-    setTimeWindow(next.topic.timeWindow === "1d" ? "1d" : "7d");
+    setTimeWindow(daysOf(next.topic.timeWindow));
     setItemCount(next.topic.itemCount ?? 6);
     setAudience(next.topic.audience ?? "随便看看");
     setPlatforms(next.topic.platforms.filter((item) => item.selected).map((item) => item.command));
@@ -230,6 +232,17 @@ export function Workspace() {
     timer = setTimeout(() => void poll(), 1_000);
     return () => { stopped = true; clearTimeout(timer); };
   }, [id, loginChecking]);
+
+  useEffect(() => {
+    if (editor !== "platforms") return;
+    function close(event: PointerEvent) {
+      const node = platformRef.current;
+      if (node && event.target instanceof Node && node.contains(event.target)) return;
+      setEditor((current) => current === "platforms" ? null : current);
+    }
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [editor]);
 
   async function run(kind: "research" | "track") {
     setFormError("");
@@ -339,7 +352,7 @@ export function Workspace() {
           snapshot: {
             platforms: { command: string; status: string; error?: string }[];
             events: { title: string; itemIds: string[]; platforms: string[] }[];
-            items: { id: string; url: string }[];
+            items: { id: string; title: string; url: string; publishedAt?: string; drop?: string }[];
           };
           briefText: string;
         }>(`/api/topics/${id}/snapshots/${snapshotId}`);
@@ -354,6 +367,7 @@ export function Workspace() {
             url: event.itemIds.map((itemId) => items.get(itemId) ?? "").find((url) => /^https?:\/\//i.test(url)) ?? "",
             platforms: event.platforms,
           })),
+          dropped: body.snapshot.items.flatMap((item) => item.drop ? [{ title: item.title, reason: item.drop, publishedAt: item.publishedAt }] : []),
           text: stripFrontMatter(body.briefText),
         });
         return;
@@ -366,6 +380,7 @@ export function Workspace() {
         title: fileStamp(relative) ?? relative.split("/").pop() ?? relative,
         platforms: null,
         events: null,
+        dropped: null,
         text: raw,
       });
     } catch (reason) {
@@ -429,7 +444,7 @@ export function Workspace() {
   const primary = primaryAction(confirmed, noSnapshot);
 
   const comparable = Boolean(overview?.hasVerdicts);
-  const listed = (overview?.hotspots ?? []).length || (overview?.digests ?? []).length || overview?.events.length || 0;
+  const listed = (overview?.digests ?? []).length;
   const counts = comparable
     ? GROUPS.map(([key, label]) => ({ key, label: key === "fading" ? "消退" : label, count: overview?.groups[key].length ?? 0 }))
     : [
@@ -532,6 +547,14 @@ export function Workspace() {
                   {event.platforms.length > 0 && <p className="story-source">来源：{event.platforms.join("、")}</p>}
                 </div>
               ))}
+              {reading.dropped && reading.dropped.length > 0 && (
+                <div className="story">
+                  <strong>已丢弃</strong>
+                  {reading.dropped.map((item) => (
+                    <p className="story-copy" key={`${item.title}${item.reason}`}>{item.title}{item.publishedAt ? ` · ${item.publishedAt.slice(0, 16).replace("T", " ")}` : ""} · {item.reason}</p>
+                  ))}
+                </div>
+              )}
               {reading.text && <Prose text={reading.text} />}
             </article>
           ) : center === "settings" ? (
@@ -544,29 +567,43 @@ export function Workspace() {
                 <ChipEditor placeholder="排除" values={excluded} onChange={setExcluded} />
                 {!confirmed && <p className="hint">先在右侧对话里把主题卡谈定，也可以在这里填写。</p>}
               </SettingRow>
-              <SettingRow icon="users" label="平台" value={platformSummary(platforms)} open={editor === "platforms"} onToggle={() => setEditor(editor === "platforms" ? null : "platforms")}>
-                <div className="platform-scroll">
-                  {catalog.map((entry) => (
-                    <label className={platforms.includes(entry.command) ? "plat on" : "plat"} key={entry.command}>
-                      <input
-                        type="checkbox"
-                        disabled={!entry.selectable}
-                        checked={platforms.includes(entry.command)}
-                        onChange={(event) => setPlatforms(event.target.checked ? [...platforms, entry.command] : platforms.filter((item) => item !== entry.command))}
-                      />
-                      <span>
-                        {entry.command}
-                        {entry.loginState === "not-logged-in" && " · 需要登录"}
-                        {!entry.selectable && (entry.disabledReason === "login-required" ? " · 需要登录，暂不纳入" : " · 暂不能纳入对比")}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </SettingRow>
-              <SettingRow icon="clock" label="时间窗" value={timeWindow === "1d" ? "过去 24 小时" : "过去 7 天"} open={editor === "window"} onToggle={() => setEditor(editor === "window" ? null : "window")}>
+              <div ref={platformRef}>
+                <SettingRow icon="users" label="平台" value={platforms.length === 0 ? "未选平台" : `已选 ${platforms.length} 个`} open={editor === "platforms"} onToggle={() => setEditor(editor === "platforms" ? null : "platforms")}>
+                  <div className="platform-panel">
+                    {catalog.map((entry) => (
+                      <label className={platforms.includes(entry.command) ? "plat on" : "plat"} key={entry.command}>
+                        <input
+                          type="checkbox"
+                          disabled={!entry.selectable}
+                          checked={platforms.includes(entry.command)}
+                          onChange={(event) => setPlatforms(event.target.checked ? [...platforms, entry.command] : platforms.filter((item) => item !== entry.command))}
+                        />
+                        <span>
+                          {entry.command}
+                          {entry.loginState === "not-logged-in" && " · 需要登录"}
+                          {!entry.selectable && (entry.disabledReason === "login-required" ? " · 需要登录，暂不纳入" : " · 暂不能纳入对比")}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </SettingRow>
+              </div>
+              <SettingRow icon="clock" label="时间窗" value={`过去 ${timeWindow} 天`} open={editor === "window"} onToggle={() => setEditor(editor === "window" ? null : "window")}>
                 <div className="choice">
-                  <button type="button" className={timeWindow === "1d" ? "on" : ""} onClick={() => setTimeWindow("1d")}>过去 24 小时</button>
-                  <button type="button" className={timeWindow === "7d" ? "on" : ""} onClick={() => setTimeWindow("7d")}>过去 7 天</button>
+                  <button type="button" className={timeWindow === 1 ? "on" : ""} onClick={() => setTimeWindow(1)}>1 天</button>
+                  <button type="button" className={timeWindow === 7 ? "on" : ""} onClick={() => setTimeWindow(7)}>7 天</button>
+                  <input
+                    type="number"
+                    min={1}
+                    max={90}
+                    aria-label="过去几天"
+                    value={timeWindow}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      if (!Number.isFinite(next)) return;
+                      setTimeWindow(Math.min(90, Math.max(1, Math.round(next))));
+                    }}
+                  />
                 </div>
                 <label>留下几条
                   <select value={itemCount} onChange={(event) => setItemCount(Number(event.target.value))}>
@@ -599,15 +636,16 @@ export function Workspace() {
           ) : (
             <>
               <Pipeline done={!noSnapshot && !running && !overview?.empty && !halt} running={running} mark={halt || running ? job?.phase ?? "采集" : undefined} caption={halt ?? pipelineCaption(running, noSnapshot, overview, jobLines)} />
+              {overview && !overview.empty && overview.digestLead ? <p className="quiet-line">{overview.digestLead}</p> : null}
               <CountPills counts={counts} active={filter} onPick={(key) => { if (!comparable) return; setFilter(filter === key ? null : key as GroupKey); }} />
-              {overview?.quiet && <p className="quiet-line">今日无明显更新。</p>}
+              {overview?.quiet && feed.length > 0 && <p className="quiet-line">今日无明显更新。</p>}
               {!overview || overview.empty ? (
                 <div className="feed-empty">
                   <p>尚未调研。</p>
                   <button type="button" onClick={() => { setReading(null); setCenter("settings"); }}>先把调研方案谈定，再开始第一次调研。</button>
                 </div>
               ) : feed.length === 0 ? (
-                <p className="quiet-line">{filter ? "这一组里没有条目。" : "这次没有可展示的条目。"}</p>
+                <p className="quiet-line">{filter ? "这一组里没有条目。" : "这一轮没有可展示的条目。"}</p>
               ) : feed.map((item) => <StoryCard key={item.key} title={item.title} url={item.url} what={item.what} why={item.why} source={item.source} />)}
               <LogTable open={logOpen} onToggle={() => setLogOpen((open) => !open)} rows={logs} />
             </>
@@ -683,20 +721,14 @@ function storiesOf(overview: Overview | null, filter: GroupKey | null): { key: s
       source: overview.events.find((event) => event.url === item.url)?.platforms.join("、") ? `来源：${overview.events.find((event) => event.url === item.url)?.platforms.join("、")}` : "",
     }));
   }
-  if ((overview.digests ?? []).length > 0) {
-    return (overview.digests ?? []).map((item) => ({ key: item.url, title: item.title, url: item.url, what: item.what, why: item.why, source: item.source ? `来源：${item.source}` : "" }));
-  }
-  if ((overview.hotspots ?? []).length > 0) {
-    return (overview.hotspots ?? []).map((item) => ({
-      key: item.url || item.title,
-      title: item.title,
-      url: item.url,
-      what: item.factors.map((factor) => factor.note).filter(Boolean).join("；"),
-      why: item.discussion,
-      source: [item.stage, `热度 ${item.score}`].filter(Boolean).join(" · "),
-    }));
-  }
-  return overview.events.map((item) => ({ key: item.url, title: item.title, url: item.url, what: "", why: "", source: item.platforms.length ? `来源：${item.platforms.join("、")}` : "" }));
+  return (overview.digests ?? []).map((item) => ({
+    key: item.url || item.title,
+    title: item.title,
+    url: item.url,
+    what: item.what,
+    why: item.why,
+    source: item.source ? `来源：${item.source}` : "",
+  }));
 }
 
 function logRows(platforms: string[], overview: Overview | null, jobLines: { command: string; label: string }[], noSnapshot: boolean): { command: string; status: string; bad: boolean }[] {
@@ -727,14 +759,16 @@ function pipelineCaption(running: boolean, noSnapshot: boolean, overview: Overvi
     return current ? `采集中 · ${current.command} ${current.label}` : "采集中";
   }
   if (noSnapshot || !overview || overview.empty) return "还没有开始";
-  const count = (overview.hotspots ?? []).length || (overview.digests ?? []).length || overview.events.length;
+  const count = (overview.digests ?? []).length;
   return `已整理 ${count} 条${overview.clusteringNote ? ` · ${overview.clusteringNote}` : ""}`;
 }
 
-function platformSummary(platforms: string[]): string {
-  if (platforms.length === 0) return "未选";
-  if (platforms.length <= 2) return platforms.join("、");
-  return `${platforms.slice(0, 2).join("、")} 等 ${platforms.length} 个`;
+function daysOf(value: unknown): number {
+  if (value === "1d") return 1;
+  if (value === "7d") return 7;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return 7;
+  return Math.min(90, Math.max(1, Math.round(parsed)));
 }
 function Prose({ text }: { text: string }) {
   return (
