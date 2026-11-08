@@ -29,6 +29,7 @@ import {
   type ThemeCardInput,
   type ThemeFile,
 } from "./topic/store.js";
+import { mountLedger } from "./ledger/http.js";
 import { DIR_BRIEF, DIR_MATERIAL, DIR_NOTE, DIR_SNAPSHOT, THEME_FILE, type AppDeps } from "./types.js";
 
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -47,6 +48,8 @@ export function createApp(deps: AppDeps) {
     console.error(error);
     return c.json({ error: { code: "JOB_FAILED", message: "这次没有留下快照。" } }, 500);
   });
+
+  mountLedger(app, deps);
 
   app.get("/api/health", async (c) => {
     let opencli = true;
