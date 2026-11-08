@@ -16,6 +16,7 @@ const deps: AppDeps = {
   dataDir: process.env.FOLLOWUP_DATA_DIR ?? (process.env.APPDATA ? path.join(process.env.APPDATA, "AI_NewsFollowUp") : path.join(os.homedir(), ".ai-newsfollowup")),
   now: () => new Date(),
   fetchImpl: fetch,
+  kaggle: process.env.KAGGLE_USERNAME && process.env.KAGGLE_KEY ? { username: process.env.KAGGLE_USERNAME, key: process.env.KAGGLE_KEY } : null,
 };
 
 const app = createApp(deps);

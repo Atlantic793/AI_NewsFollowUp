@@ -1,29 +1,26 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { request } from "../api";
+import { COLUMN_TITLES, clock, type DiffView, type EventView, type PriceView, type RankView } from "../types";
 
-interface DiffItem {
-  id: number;
-  tableName: string;
-  field: string;
-  oldValue: string;
-  newValue: string;
-  fetchedAt: string;
-  label: string;
+interface Hit {
+  name: string;
+  prices: PriceView[];
+  ranks: RankView[];
+  events: EventView[];
+  diffs: DiffView[];
 }
-
-const GROUP: Record<string, string> = { prices: "价目", ranks: "排名", hot: "热榜", events: "厂商动态" };
 
 export function WatchPage() {
   const [names, setNames] = useState<string[]>([]);
-  const [diffs, setDiffs] = useState<DiffItem[]>([]);
+  const [hits, setHits] = useState<Hit[]>([]);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
 
   function load() {
-    request<{ names: string[]; diffs: DiffItem[] }>("/api/ledger/watch").then((body) => {
+    request<{ names: string[]; hits: Hit[] }>("/api/ledger/watch").then((body) => {
       setNames(body.names);
-      setDiffs(body.diffs);
+      setHits(body.hits);
     }).catch((reason: Error) => setError(reason.message));
   }
 
@@ -46,7 +43,7 @@ export function WatchPage() {
       <header className="desk-top">
         <Link className="desk-back" to="/" aria-label="回到首页">←</Link>
         <h1 className="desk-title">定制追踪</h1>
-        <span className="desk-status">只看勾过的名字</span>
+        <span className="desk-status">只看名单里的名字</span>
       </header>
       {error ? <p className="ledger-error">{error}</p> : null}
       <div className="desk-body">
@@ -60,20 +57,44 @@ export function WatchPage() {
               </div>
             ))}
             <form className="archive-add" onSubmit={(event) => { event.preventDefault(); void add(); }}>
-              <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="模型或套餐名" aria-label="模型或套餐名" />
+              <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="模型或套餐名，例如 deepseek-flash" aria-label="模型或套餐名" />
               <button type="submit">添加</button>
             </form>
           </div>
         </aside>
         <main className="desk-main">
           <div className="feed">
-            {diffs.length === 0 ? <div className="feed-empty"><p>今天没有这些名字的新变化。</p><Link to="/">回到首页看全表</Link></div> : null}
-            {diffs.map((diff) => (
-              <article className="story" key={diff.id}>
-                <small>{GROUP[diff.tableName] ?? diff.tableName}</small>
-                <strong>{diff.label}</strong>
-                <p className="story-copy">{diff.field === "row" ? diff.newValue : `${diff.field}：${diff.oldValue || "空"} → ${diff.newValue}`}</p>
-                <div className="story-notes"><span>{diff.fetchedAt.slice(0, 16).replace("T", " ")}</span></div>
+            {hits.length === 0 ? <div className="feed-empty"><p>名单是空的。加一个模型或套餐的名字，这里会列出它在各栏里的行和今天的变化。</p></div> : null}
+            {hits.map((hit) => (
+              <article className="story" key={hit.name}>
+                <strong>{hit.name}</strong>
+                {hit.diffs.length > 0 ? (
+                  <ul className="watch-list">
+                    {hit.diffs.map((diff) => (
+                      <li key={diff.id}>
+                        <small>{COLUMN_TITLES[diff.column]} · {clock(diff.fetchedAt)}</small>
+                        {diff.label}：{diff.field === "row" ? diff.newValue : `${diff.field} ${diff.oldValue || "空"} → ${diff.newValue}`}
+                      </li>
+                    ))}
+                  </ul>
+                ) : <p className="story-copy">今天没有变化。</p>}
+                {hit.prices.length > 0 ? (
+                  <ul className="watch-list">
+                    {hit.prices.slice(0, 8).map((row) => <li key={`p${row.id}`}><small>{row.vendor} · {row.tier}</small>{row.product} {row.metric}{row.condition ? `（${row.condition}）` : ""}：<b>{row.price}</b> {row.unit}</li>)}
+                    {hit.prices.length > 8 ? <li><Link to="/columns/price">还有 {hit.prices.length - 8} 行，去价目表搜</Link></li> : null}
+                  </ul>
+                ) : null}
+                {hit.ranks.length > 0 ? (
+                  <ul className="watch-list">
+                    {hit.ranks.map((row) => <li key={`r${row.id}`}><small>{row.board}</small>{row.model}：第 {row.rank} 名 · {row.score}</li>)}
+                  </ul>
+                ) : null}
+                {hit.events.length > 0 ? (
+                  <ul className="watch-list">
+                    {hit.events.map((row) => <li key={`e${row.id}`}><small>{row.vendor} · {row.date}</small>{row.title}</li>)}
+                  </ul>
+                ) : null}
+                {hit.prices.length + hit.ranks.length + hit.events.length === 0 ? <p className="story-copy">库里还没有这个名字的行。</p> : null}
               </article>
             ))}
           </div>

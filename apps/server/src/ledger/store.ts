@@ -1,83 +1,76 @@
-import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   SOURCES,
+  comparable,
   diffRows,
+  sourceById,
+  type CleanedSet,
   type ColumnKind,
-  type ComparedRow,
-  type EventDraft,
-  type HotDraft,
-  type PriceDraft,
-  type RankDraft,
-  type SourceKind,
+  type EventRow,
+  type HotRow,
+  type PriceRow,
+  type RankRow,
+  type Rejected,
+  type SourceDef,
 } from "@followup/core";
 
-export interface SourceRow {
-  id: string;
-  vendor: string;
-  kind: SourceKind;
-  url: string;
-  label: string;
-  enabled: boolean;
-  status: string;
-  error: string;
-  fetchedAt: string;
-}
+const SCHEMA = 2;
+const SAMPLES_PER_REASON = 3;
 
-export interface RunRow {
+export type RunStatus = "ok" | "没抽出" | "skipped" | "failed";
+
+export interface RunRecord {
   sourceId: string;
   startedAt: string;
-  status: string;
+  status: RunStatus;
   httpStatus: number | null;
   error: string;
   bytes: number;
+  hash: string;
+  rawPath: string;
+  extracted: number;
+  cleaned: number;
+  stored: number;
+  changed: number;
+  rejected: number;
+  reasons: Record<string, number>;
 }
 
-interface PriceRow extends PriceDraft {
-  id: number;
+export interface SourceView {
+  id: string;
   vendor: string;
-  sourceId: string;
+  label: string;
+  column: ColumnKind;
   url: string;
-  fetchedAt: string;
+  page: string;
+  enabled: boolean;
+  needs: string;
+  run: RunRecord | null;
 }
 
-interface RankRow extends RankDraft {
+export interface PriceView extends PriceRow { id: number; sourceId: string; vendor: string; page: string; fetchedAt: string }
+export interface RankView extends RankRow { id: number; sourceId: string; board: string; page: string; fetchedAt: string }
+export interface HotView extends HotRow { id: number; sourceId: string; site: string; fetchedAt: string }
+export interface EventView extends EventRow { id: number; sourceId: string; vendor: string; basis: "official"; fetchedAt: string }
+
+export interface DiffView {
   id: number;
-  board: string;
   sourceId: string;
-  url: string;
-  fetchedAt: string;
-  boardDate: string;
-}
-
-interface HotRow extends HotDraft {
-  id: number;
-  source: string;
-  sourceId: string;
-  fetchedAt: string;
-}
-
-interface EventRow extends EventDraft {
-  id: number;
+  column: ColumnKind;
   vendor: string;
-  sourceId: string;
-  url: string;
-  fetchedAt: string;
-  basis: "official";
-}
-
-export interface DiffRow {
-  id: number;
-  tableName: string;
   rowKey: string;
+  label: string;
   field: string;
   oldValue: string;
   newValue: string;
   fetchedAt: string;
-  label: string;
 }
+
+type Raw = Record<string, string | number | null>;
+
+const text = (value: string | number | null | undefined) => (value === null || value === undefined ? "" : String(value));
 
 export class LedgerStore {
   private readonly db: DatabaseSync;
@@ -85,64 +78,67 @@ export class LedgerStore {
   constructor(file: string) {
     mkdirSync(path.dirname(file), { recursive: true });
     this.db = new DatabaseSync(file);
+    const version = Number((this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
+    if (version < SCHEMA) {
+      this.db.exec(`
+        DROP TABLE IF EXISTS sources; DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS raw_pages;
+        DROP TABLE IF EXISTS prices; DROP TABLE IF EXISTS ranks; DROP TABLE IF EXISTS hot;
+        DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS diffs; DROP TABLE IF EXISTS rejects;
+      `);
+    }
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS sources (
-        id TEXT PRIMARY KEY, vendor TEXT NOT NULL, kind TEXT NOT NULL, url TEXT NOT NULL,
-        label TEXT NOT NULL, enabled INTEGER NOT NULL
-      );
+      CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, enabled INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, started_at TEXT NOT NULL,
-        status TEXT NOT NULL, http_status INTEGER, error TEXT NOT NULL, bytes INTEGER NOT NULL, content_hash TEXT NOT NULL
+        id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, started_at TEXT NOT NULL, status TEXT NOT NULL,
+        http_status INTEGER, error TEXT NOT NULL, bytes INTEGER NOT NULL, content_hash TEXT NOT NULL, raw_path TEXT NOT NULL,
+        extracted INTEGER NOT NULL, cleaned INTEGER NOT NULL, stored INTEGER NOT NULL, changed INTEGER NOT NULL,
+        rejected INTEGER NOT NULL, reasons TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS raw_pages (
-        source_id TEXT PRIMARY KEY, url TEXT NOT NULL, fetched_at TEXT NOT NULL, body TEXT NOT NULL, content_hash TEXT NOT NULL
+      CREATE TABLE IF NOT EXISTS rejects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, reason TEXT NOT NULL, excerpt TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS prices (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, vendor TEXT NOT NULL, product TEXT NOT NULL, kind TEXT NOT NULL,
-        metric TEXT NOT NULL, price TEXT NOT NULL, unit TEXT NOT NULL, quota TEXT NOT NULL, reset_cycle TEXT NOT NULL,
-        source_id TEXT NOT NULL, url TEXT NOT NULL, fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL
+        id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, kind TEXT NOT NULL, product TEXT NOT NULL, tier TEXT NOT NULL,
+        metric TEXT NOT NULL, condition TEXT NOT NULL, price TEXT NOT NULL, amount REAL, currency TEXT NOT NULL, unit TEXT NOT NULL,
+        quota TEXT NOT NULL, reset_rule TEXT NOT NULL, fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS ranks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, board TEXT NOT NULL, rank_no TEXT NOT NULL, model TEXT NOT NULL,
-        score TEXT NOT NULL, board_date TEXT NOT NULL, source_id TEXT NOT NULL, url TEXT NOT NULL,
-        fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL
+        id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, rank_no INTEGER NOT NULL, model TEXT NOT NULL, org TEXT NOT NULL,
+        score TEXT NOT NULL, score_value REAL NOT NULL, votes TEXT NOT NULL, board_date TEXT NOT NULL, fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS hot (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, rank_no TEXT NOT NULL, title TEXT NOT NULL,
-        url TEXT NOT NULL, source_id TEXT NOT NULL, fetched_at TEXT NOT NULL
+        id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, rank_no INTEGER NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
+        heat TEXT NOT NULL, summary TEXT NOT NULL, fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, vendor TEXT NOT NULL, type TEXT NOT NULL, basis TEXT NOT NULL,
-        text TEXT NOT NULL, source_id TEXT NOT NULL, url TEXT NOT NULL, fetched_at TEXT NOT NULL
+        id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, date TEXT NOT NULL,
+        detail TEXT NOT NULL, url TEXT NOT NULL, fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS diffs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT NOT NULL, row_key TEXT NOT NULL, field TEXT NOT NULL,
-        old_value TEXT NOT NULL, new_value TEXT NOT NULL, fetched_at TEXT NOT NULL, label TEXT NOT NULL
+        id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, column_kind TEXT NOT NULL, row_key TEXT NOT NULL, label TEXT NOT NULL,
+        field TEXT NOT NULL, old_value TEXT NOT NULL, new_value TEXT NOT NULL, fetched_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS watches (name TEXT PRIMARY KEY, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      PRAGMA user_version = ${SCHEMA};
     `);
-    const insert = this.db.prepare(`INSERT INTO sources (id, vendor, kind, url, label, enabled)
-      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET vendor = excluded.vendor, kind = excluded.kind, url = excluded.url, label = excluded.label`);
-    for (const source of SOURCES) insert.run(source.id, source.vendor, source.kind, source.url, source.label, source.id === "H03" ? 0 : 1);
+    const insert = this.db.prepare("INSERT INTO sources (id, enabled) VALUES (?, ?) ON CONFLICT(id) DO NOTHING");
+    for (const source of SOURCES) insert.run(source.id, source.enabled ? 1 : 0);
   }
 
-  sources(): SourceRow[] {
-    const rows = this.db.prepare(`SELECT s.id, s.vendor, s.kind, s.url, s.label, s.enabled,
-      COALESCE((SELECT status FROM runs WHERE source_id = s.id ORDER BY id DESC LIMIT 1), '') AS status,
-      COALESCE((SELECT error FROM runs WHERE source_id = s.id ORDER BY id DESC LIMIT 1), '') AS error,
-      COALESCE((SELECT started_at FROM runs WHERE source_id = s.id ORDER BY id DESC LIMIT 1), '') AS fetched_at
-      FROM sources s ORDER BY s.id`).all() as Array<Record<string, string | number>>;
-    return rows.map((row) => ({
-      id: String(row.id),
-      vendor: String(row.vendor),
-      kind: String(row.kind) as SourceKind,
-      url: String(row.url),
-      label: String(row.label),
-      enabled: Number(row.enabled) === 1,
-      status: String(row.status),
-      error: String(row.error),
-      fetchedAt: String(row.fetched_at),
+  sources(): SourceView[] {
+    const enabled = new Map((this.db.prepare("SELECT id, enabled FROM sources").all() as Raw[]).map((row) => [text(row.id), Number(row.enabled) === 1]));
+    const runs = new Map((this.db.prepare("SELECT * FROM runs WHERE id IN (SELECT MAX(id) FROM runs GROUP BY source_id)").all() as Raw[]).map((row) => [text(row.source_id), mapRun(row)]));
+    return SOURCES.map((source) => ({
+      id: source.id,
+      vendor: source.vendor,
+      label: source.label,
+      column: source.column,
+      url: source.url,
+      page: source.page,
+      enabled: enabled.get(source.id) ?? source.enabled,
+      needs: source.needs ?? "",
+      run: runs.get(source.id) ?? null,
     }));
   }
 
@@ -150,174 +146,206 @@ export class LedgerStore {
     this.db.prepare("UPDATE sources SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
   }
 
-  enabledSources(): SourceRow[] {
-    return this.sources().filter((source) => source.enabled);
-  }
-
-  recordRun(row: RunRow & { hash: string }): void {
-    this.db.prepare(`INSERT INTO runs (source_id, started_at, status, http_status, error, bytes, content_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(row.sourceId, row.startedAt, row.status, row.httpStatus, row.error, row.bytes, row.hash);
-  }
-
-  saveRaw(sourceId: string, url: string, fetchedAt: string, body: string): void {
-    const hash = createHash("sha256").update(body).digest("hex");
-    this.db.prepare(`INSERT INTO raw_pages (source_id, url, fetched_at, body, content_hash)
-      VALUES (?, ?, ?, ?, ?) ON CONFLICT(source_id) DO UPDATE SET url = excluded.url, fetched_at = excluded.fetched_at, body = excluded.body, content_hash = excluded.content_hash`)
-      .run(sourceId, url, fetchedAt, body, hash);
-  }
-
-  raw(sourceId: string): { url: string; fetchedAt: string; body: string } | null {
-    const row = this.db.prepare("SELECT url, fetched_at, body FROM raw_pages WHERE source_id = ?").get(sourceId) as
-      | { url: string; fetched_at: string; body: string }
-      | undefined;
-    return row ? { url: row.url, fetchedAt: row.fetched_at, body: row.body } : null;
-  }
-
-  previous(table: string, sourceId: string): ComparedRow[] {
-    if (table === "prices") {
-      return (this.db.prepare("SELECT vendor, product, metric, price, quota, reset_cycle FROM prices WHERE source_id = ?").all(sourceId) as Array<Record<string, string>>)
-        .map((row) => ({ key: `${row.product}|${row.metric}`, fields: { price: row.price, quota: row.quota, reset: row.reset_cycle } }));
+  recordRun(run: RunRecord, rejected: readonly Rejected[]): void {
+    this.db.prepare(`INSERT INTO runs (source_id, started_at, status, http_status, error, bytes, content_hash, raw_path,
+      extracted, cleaned, stored, changed, rejected, reasons) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(run.sourceId, run.startedAt, run.status, run.httpStatus, run.error, run.bytes, run.hash, run.rawPath,
+        run.extracted, run.cleaned, run.stored, run.changed, run.rejected, JSON.stringify(run.reasons));
+    this.db.prepare("DELETE FROM rejects WHERE source_id = ?").run(run.sourceId);
+    const insert = this.db.prepare("INSERT INTO rejects (source_id, reason, excerpt) VALUES (?, ?, ?)");
+    const kept = new Map<string, number>();
+    for (const item of rejected) {
+      const count = kept.get(item.reason) ?? 0;
+      if (count >= SAMPLES_PER_REASON) continue;
+      kept.set(item.reason, count + 1);
+      insert.run(run.sourceId, item.reason, item.excerpt);
     }
-    if (table === "ranks") {
-      return (this.db.prepare("SELECT model, rank_no, score FROM ranks WHERE source_id = ?").all(sourceId) as Array<Record<string, string>>)
-        .map((row) => ({ key: row.model, fields: { rank: row.rank_no, score: row.score } }));
+  }
+
+  rejects(sourceId: string): Rejected[] {
+    return (this.db.prepare("SELECT reason, excerpt FROM rejects WHERE source_id = ? ORDER BY id").all(sourceId) as Raw[])
+      .map((row) => ({ reason: text(row.reason), excerpt: text(row.excerpt) }));
+  }
+
+  /** 把这个来源的旧行换成这一轮清洗后的行，返回记下的变化条数。第一次入库只当基线，不记变化。 */
+  replace(source: SourceDef, set: CleanedSet, fetchedAt: string): number {
+    const before = this.cleanedOf(source);
+    const removals = set.column === "price" || set.column === "rank";
+    const diffs = before.rows.length === 0 ? [] : diffRows(comparable(before), comparable(set), removals);
+    this.db.exec("BEGIN");
+    try {
+      this.clear(source);
+      this.insertRows(source.id, set, fetchedAt);
+      const insert = this.db.prepare(`INSERT INTO diffs (source_id, column_kind, row_key, label, field, old_value, new_value, fetched_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const diff of diffs) insert.run(source.id, source.column, diff.key, diff.label, diff.field, diff.oldValue, diff.newValue, fetchedAt);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
     }
-    if (table === "hot") {
-      return (this.db.prepare("SELECT title, url FROM hot WHERE source_id = ?").all(sourceId) as Array<Record<string, string>>)
-        .map((row) => ({ key: row.url || row.title, fields: { title: row.title } }));
-    }
-    return (this.db.prepare("SELECT type, text FROM events WHERE source_id = ?").all(sourceId) as Array<Record<string, string>>)
-      .map((row) => ({ key: `${row.type}|${row.text}`, fields: { text: row.text } }));
-  }
-
-  replacePrices(sourceId: string, vendor: string, url: string, fetchedAt: string, drafts: PriceDraft[], label: string): number {
-    return this.replace(sourceId, "prices", label, fetchedAt, this.previous("prices", sourceId), drafts.map((row) => ({
-      key: `${row.product}|${row.metric}`,
-      fields: { price: row.price, quota: row.quota, reset: row.reset },
-    })), () => {
-      this.db.prepare("DELETE FROM prices WHERE source_id = ?").run(sourceId);
-      const insert = this.db.prepare(`INSERT INTO prices (vendor, product, kind, metric, price, unit, quota, reset_cycle, source_id, url, fetched_at, excerpt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-      for (const row of drafts) insert.run(vendor, row.product, row.kind, row.metric, row.price, row.unit, row.quota, row.reset, sourceId, url, fetchedAt, row.excerpt);
-    });
-  }
-
-  replaceRanks(sourceId: string, board: string, url: string, fetchedAt: string, drafts: RankDraft[], label: string): number {
-    return this.replace(sourceId, "ranks", label, fetchedAt, this.previous("ranks", sourceId), drafts.map((row) => ({
-      key: row.model,
-      fields: { rank: row.rank, score: row.score },
-    })), () => {
-      this.db.prepare("DELETE FROM ranks WHERE source_id = ?").run(sourceId);
-      const insert = this.db.prepare(`INSERT INTO ranks (board, rank_no, model, score, board_date, source_id, url, fetched_at, excerpt)
-        VALUES (?, ?, ?, ?, '', ?, ?, ?, ?)`);
-      for (const row of drafts) insert.run(board, row.rank, row.model, row.score, sourceId, url, fetchedAt, row.excerpt);
-    });
-  }
-
-  replaceHot(sourceId: string, source: string, fetchedAt: string, drafts: HotDraft[], label: string): number {
-    return this.replace(sourceId, "hot", label, fetchedAt, this.previous("hot", sourceId), drafts.map((row) => ({
-      key: row.url || row.title,
-      fields: { title: row.title },
-    })), () => {
-      this.db.prepare("DELETE FROM hot WHERE source_id = ?").run(sourceId);
-      const insert = this.db.prepare("INSERT INTO hot (source, rank_no, title, url, source_id, fetched_at) VALUES (?, ?, ?, ?, ?, ?)");
-      for (const row of drafts) insert.run(source, row.rank, row.title, row.url, sourceId, fetchedAt);
-    });
-  }
-
-  replaceEvents(sourceId: string, vendor: string, url: string, fetchedAt: string, drafts: EventDraft[], label: string): number {
-    return this.replace(sourceId, "events", label, fetchedAt, this.previous("events", sourceId), drafts.map((row) => ({
-      key: `${row.type}|${row.text}`,
-      fields: { text: row.text },
-    })), () => {
-      this.db.prepare("DELETE FROM events WHERE source_id = ?").run(sourceId);
-      const insert = this.db.prepare("INSERT INTO events (vendor, type, basis, text, source_id, url, fetched_at) VALUES (?, ?, 'official', ?, ?, ?, ?)");
-      for (const row of drafts) insert.run(vendor, row.type, row.text, sourceId, url, fetchedAt);
-    });
-  }
-
-  private replace(sourceId: string, table: string, label: string, fetchedAt: string, previous: ComparedRow[], next: ComparedRow[], write: () => void): number {
-    const diffs = diffRows(previous, next);
-    write();
-    const insert = this.db.prepare("INSERT INTO diffs (table_name, row_key, field, old_value, new_value, fetched_at, label) VALUES (?, ?, ?, ?, ?, ?, ?)");
-    for (const diff of diffs) insert.run(table, `${sourceId}:${diff.key}`, diff.field, diff.oldValue, diff.newValue, fetchedAt, label);
     return diffs.length;
   }
 
-  prices(): PriceRow[] {
-    return (this.db.prepare("SELECT * FROM prices ORDER BY vendor, product, metric").all() as Array<Record<string, string | number>>).map((row) => ({
+  clear(source: SourceDef): void {
+    this.db.prepare(`DELETE FROM ${tableFor(source.column)} WHERE source_id = ?`).run(source.id);
+  }
+
+  private insertRows(sourceId: string, set: CleanedSet, fetchedAt: string): void {
+    switch (set.column) {
+      case "price": {
+        const insert = this.db.prepare(`INSERT INTO prices (source_id, kind, product, tier, metric, condition, price, amount, currency, unit, quota, reset_rule, fetched_at, excerpt)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        for (const row of set.rows) insert.run(sourceId, row.kind, row.product, row.tier, row.metric, row.condition, row.price, row.amount, row.currency, row.unit, row.quota, row.reset, fetchedAt, row.excerpt);
+        return;
+      }
+      case "rank": {
+        const insert = this.db.prepare(`INSERT INTO ranks (source_id, rank_no, model, org, score, score_value, votes, board_date, fetched_at, excerpt)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        for (const row of set.rows) insert.run(sourceId, row.rank, row.model, row.org, row.score, row.scoreValue, row.votes, row.boardDate, fetchedAt, row.excerpt);
+        return;
+      }
+      case "hot": {
+        const insert = this.db.prepare("INSERT INTO hot (source_id, rank_no, title, url, heat, summary, fetched_at, excerpt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+        for (const row of set.rows) insert.run(sourceId, row.rank, row.title, row.url, row.heat, row.summary, fetchedAt, row.excerpt);
+        return;
+      }
+      case "event": {
+        const insert = this.db.prepare("INSERT INTO events (source_id, type, title, date, detail, url, fetched_at, excerpt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+        for (const row of set.rows) insert.run(sourceId, row.type, row.title, row.date, row.detail, row.url, fetchedAt, row.excerpt);
+        return;
+      }
+      default: {
+        const unreachable: never = set;
+        return unreachable;
+      }
+    }
+  }
+
+  private cleanedOf(source: SourceDef): CleanedSet {
+    switch (source.column) {
+      case "price":
+        return { column: "price", rows: this.prices(source.id), rejected: [] };
+      case "rank":
+        return { column: "rank", rows: this.ranks(source.id), rejected: [] };
+      case "hot":
+        return { column: "hot", rows: this.hot(source.id), rejected: [] };
+      case "event":
+        return { column: "event", rows: this.events(source.id), rejected: [] };
+      default: {
+        const unreachable: never = source;
+        return unreachable;
+      }
+    }
+  }
+
+  prices(sourceId?: string): PriceView[] {
+    return this.select("prices", sourceId, "source_id, id").map((row) => {
+      const source = sourceById(text(row.source_id));
+      return {
+        id: Number(row.id),
+        sourceId: text(row.source_id),
+        vendor: source?.vendor ?? "",
+        page: source?.page ?? "",
+        kind: text(row.kind) === "plan" ? "plan" : "api",
+        product: text(row.product),
+        tier: text(row.tier),
+        metric: text(row.metric),
+        condition: text(row.condition),
+        price: text(row.price),
+        amount: row.amount === null ? null : Number(row.amount),
+        currency: currencyOf(text(row.currency)),
+        unit: text(row.unit),
+        quota: text(row.quota),
+        reset: text(row.reset_rule),
+        fetchedAt: text(row.fetched_at),
+        excerpt: text(row.excerpt),
+      };
+    });
+  }
+
+  ranks(sourceId?: string): RankView[] {
+    return this.select("ranks", sourceId, "source_id, rank_no").map((row) => {
+      const source = sourceById(text(row.source_id));
+      return {
+        id: Number(row.id),
+        sourceId: text(row.source_id),
+        board: source ? `${source.vendor} ${source.label}` : "",
+        page: source?.page ?? "",
+        rank: Number(row.rank_no),
+        model: text(row.model),
+        org: text(row.org),
+        score: text(row.score),
+        scoreValue: Number(row.score_value),
+        votes: text(row.votes),
+        boardDate: text(row.board_date),
+        fetchedAt: text(row.fetched_at),
+        excerpt: text(row.excerpt),
+      };
+    });
+  }
+
+  hot(sourceId?: string): HotView[] {
+    return this.select("hot", sourceId, "source_id, rank_no").map((row) => ({
       id: Number(row.id),
-      vendor: String(row.vendor),
-      product: String(row.product),
-      kind: String(row.kind) as "api" | "plan",
-      metric: String(row.metric),
-      price: String(row.price),
-      unit: String(row.unit),
-      quota: String(row.quota),
-      reset: String(row.reset_cycle),
-      excerpt: String(row.excerpt),
-      sourceId: String(row.source_id),
-      url: String(row.url),
-      fetchedAt: String(row.fetched_at),
+      sourceId: text(row.source_id),
+      site: sourceById(text(row.source_id))?.vendor ?? "",
+      rank: Number(row.rank_no),
+      title: text(row.title),
+      url: text(row.url),
+      heat: text(row.heat),
+      summary: text(row.summary),
+      fetchedAt: text(row.fetched_at),
+      excerpt: text(row.excerpt),
     }));
   }
 
-  ranks(): RankRow[] {
-    return (this.db.prepare("SELECT * FROM ranks ORDER BY board, CAST(rank_no AS INTEGER)").all() as Array<Record<string, string | number>>).map((row) => ({
+  events(sourceId?: string): EventView[] {
+    return this.select("events", sourceId, "date DESC, id").map((row) => ({
       id: Number(row.id),
-      board: String(row.board),
-      rank: String(row.rank_no),
-      model: String(row.model),
-      score: String(row.score),
-      excerpt: String(row.excerpt),
-      boardDate: String(row.board_date),
-      sourceId: String(row.source_id),
-      url: String(row.url),
-      fetchedAt: String(row.fetched_at),
-    }));
-  }
-
-  hot(): HotRow[] {
-    return (this.db.prepare("SELECT * FROM hot ORDER BY source, CAST(rank_no AS INTEGER)").all() as Array<Record<string, string | number>>).map((row) => ({
-      id: Number(row.id),
-      source: String(row.source),
-      rank: String(row.rank_no),
-      title: String(row.title),
-      url: String(row.url),
-      sourceId: String(row.source_id),
-      fetchedAt: String(row.fetched_at),
-    }));
-  }
-
-  events(): EventRow[] {
-    return (this.db.prepare("SELECT * FROM events ORDER BY fetched_at DESC, id DESC").all() as Array<Record<string, string | number>>).map((row) => ({
-      id: Number(row.id),
-      vendor: String(row.vendor),
-      type: String(row.type) as EventRow["type"],
+      sourceId: text(row.source_id),
+      vendor: sourceById(text(row.source_id))?.vendor ?? "",
       basis: "official",
-      text: String(row.text),
-      sourceId: String(row.source_id),
-      url: String(row.url),
-      fetchedAt: String(row.fetched_at),
+      type: eventType(text(row.type)),
+      title: text(row.title),
+      date: text(row.date),
+      detail: text(row.detail),
+      url: text(row.url),
+      fetchedAt: text(row.fetched_at),
+      excerpt: text(row.excerpt),
     }));
   }
 
-  todayChanges(day: string): number {
-    const row = this.db.prepare("SELECT COUNT(*) AS n FROM diffs WHERE fetched_at LIKE ?").get(`${day}%`) as { n: number };
-    return Number(row.n);
+  private select(table: string, sourceId: string | undefined, order: string): Raw[] {
+    const where = sourceId ? "WHERE source_id = ?" : "";
+    const statement = this.db.prepare(`SELECT * FROM ${table} ${where} ORDER BY ${order}`);
+    return (sourceId ? statement.all(sourceId) : statement.all()) as Raw[];
   }
 
-  changesFor(table: string, day: string): number {
-    const row = this.db.prepare("SELECT COUNT(*) AS n FROM diffs WHERE table_name = ? AND fetched_at LIKE ?").get(table, `${day}%`) as { n: number };
-    return Number(row.n);
+  changesOn(day: string, column?: ColumnKind): number {
+    const row = column
+      ? this.db.prepare("SELECT COUNT(*) AS n FROM diffs WHERE column_kind = ? AND fetched_at LIKE ?").get(column, `${day}%`)
+      : this.db.prepare("SELECT COUNT(*) AS n FROM diffs WHERE fetched_at LIKE ?").get(`${day}%`);
+    return Number((row as { n: number }).n);
   }
 
-  recentDiffs(limit: number): DiffRow[] {
-    return (this.db.prepare("SELECT * FROM diffs ORDER BY id DESC LIMIT ?").all(limit) as Array<Record<string, string | number>>).map(mapDiff);
+  diffs(limit: number): DiffView[] {
+    return (this.db.prepare("SELECT * FROM diffs ORDER BY id DESC LIMIT ?").all(limit) as Raw[]).map((row) => ({
+      id: Number(row.id),
+      sourceId: text(row.source_id),
+      column: columnOf(text(row.column_kind)),
+      vendor: sourceById(text(row.source_id))?.vendor ?? "",
+      rowKey: text(row.row_key),
+      label: text(row.label),
+      field: text(row.field),
+      oldValue: text(row.old_value),
+      newValue: text(row.new_value),
+      fetchedAt: text(row.fetched_at),
+    }));
   }
 
   watches(): string[] {
-    return (this.db.prepare("SELECT name FROM watches ORDER BY created_at").all() as Array<{ name: string }>).map((row) => row.name);
+    return (this.db.prepare("SELECT name FROM watches ORDER BY created_at").all() as Raw[]).map((row) => text(row.name));
   }
 
   addWatch(name: string, createdAt: string): void {
@@ -336,22 +364,54 @@ export class LedgerStore {
   setSetting(key: string, value: boolean): void {
     this.db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value ? "1" : "0");
   }
+
+  close(): void {
+    this.db.close();
+  }
 }
 
-function mapDiff(row: Record<string, string | number>): DiffRow {
+function mapRun(row: Raw): RunRecord {
+  let reasons: Record<string, number> = {};
+  try {
+    reasons = JSON.parse(text(row.reasons) || "{}") as Record<string, number>;
+  } catch {
+    reasons = {};
+  }
   return {
-    id: Number(row.id),
-    tableName: String(row.table_name),
-    rowKey: String(row.row_key),
-    field: String(row.field),
-    oldValue: String(row.old_value),
-    newValue: String(row.new_value),
-    fetchedAt: String(row.fetched_at),
-    label: String(row.label),
+    sourceId: text(row.source_id),
+    startedAt: text(row.started_at),
+    status: runStatus(text(row.status)),
+    httpStatus: row.http_status === null ? null : Number(row.http_status),
+    error: text(row.error),
+    bytes: Number(row.bytes),
+    hash: text(row.content_hash),
+    rawPath: text(row.raw_path),
+    extracted: Number(row.extracted),
+    cleaned: Number(row.cleaned),
+    stored: Number(row.stored),
+    changed: Number(row.changed),
+    rejected: Number(row.rejected),
+    reasons,
   };
 }
 
-export function tableFor(column: ColumnKind): string {
+function runStatus(value: string): RunStatus {
+  return value === "ok" || value === "没抽出" || value === "skipped" ? value : "failed";
+}
+
+function currencyOf(value: string): PriceRow["currency"] {
+  return value === "USD" || value === "CNY" ? value : "";
+}
+
+function eventType(value: string): EventRow["type"] {
+  return value === "release" || value === "news" || value === "status" || value === "incident" || value === "cn_access" ? value : "news";
+}
+
+function columnOf(value: string): ColumnKind {
+  return value === "price" || value === "rank" || value === "hot" ? value : "event";
+}
+
+export function tableFor(column: ColumnKind): "prices" | "ranks" | "hot" | "events" {
   switch (column) {
     case "hot":
       return "hot";

@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 
-const OWNED_BY_FILE = ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL", "FIRECRAWL_API_KEY"] as const;
+const OWNED_BY_FILE = ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL", "FIRECRAWL_API_KEY", "KAGGLE_USERNAME", "KAGGLE_KEY"] as const;
 
 export function applyEnvText(text: string, env: NodeJS.ProcessEnv): void {
   for (const name of OWNED_BY_FILE) delete env[name];
