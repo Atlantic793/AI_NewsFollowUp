@@ -34,7 +34,7 @@ afterEach(() => {
 describe("采集一轮：抓取 → 抽取 → 清洗 → 入库", () => {
   it("每一步的数量都记下，原始响应整页存盘", async () => {
     const { dataDir, deps, store } = setup({
-      "https://github.com/trending": { status: 200, body: fixture("H01-github-trending.html"), type: "text/html; charset=utf-8" },
+      "https://github.com/trending/": { status: 200, body: fixture("H01-github-trending.html"), type: "text/html; charset=utf-8" },
       "https://api-docs.deepseek.com/quick_start/pricing/": { status: 200, body: fixture("P06-deepseek-pricing.html"), type: "text/html" },
     });
     dirs.push(dataDir);
@@ -50,13 +50,13 @@ describe("采集一轮：抓取 → 抽取 → 清洗 → 入库", () => {
   });
 
   it("这一页一条都对不上：记没抽出，清掉上一轮的旧行", async () => {
-    const pages: Record<string, Reply> = { "https://github.com/trending": { status: 200, body: fixture("H01-github-trending.html"), type: "text/html" } };
+    const pages: Record<string, Reply> = { "https://github.com/trending/": { status: 200, body: fixture("H01-github-trending.html"), type: "text/html" } };
     const { dataDir, deps, store } = setup(pages);
     dirs.push(dataDir);
     await runLedger(deps, store, ["H01"], () => undefined);
     expect(store.hot()).toHaveLength(6);
 
-    pages["https://github.com/trending"] = { status: 200, body: "<html><header><nav><a href='/login'>Sign in</a></nav></header></html>", type: "text/html" };
+    pages["https://github.com/trending/"] = { status: 200, body: "<html><header><nav><a href='/login'>Sign in</a></nav></header></html>", type: "text/html" };
     await runLedger(deps, store, ["H01"], () => undefined);
     expect(store.hot()).toHaveLength(0);
     expect(store.sources().find((source) => source.id === "H01")?.run).toMatchObject({ status: "没抽出", extracted: 0, stored: 0 });

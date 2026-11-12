@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx src/index.ts",
-    "start": "tsx src/index.ts"
+    "dev": "node --env-file-if-exists=../../.env --use-env-proxy --import tsx src/index.ts",
+    "start": "node --env-file-if-exists=../../.env --use-env-proxy --import tsx src/index.ts"
   },
   "dependencies": {
     "@followup/core": "*",

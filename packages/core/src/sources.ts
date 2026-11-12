@@ -80,7 +80,7 @@ export const SOURCES: readonly SourceDef[] = [
   { id: "R02", column: "rank", parser: "swebench", vendor: "SWE-bench", label: "Verified", url: "https://www.swebench.com/", page: "https://www.swebench.com/", enabled: true },
   { id: "R03", column: "rank", parser: "artificial_analysis", vendor: "Artificial Analysis", label: "Intelligence Index", url: "https://artificialanalysis.ai/leaderboards/models", page: "https://artificialanalysis.ai/leaderboards/models", enabled: true },
 
-  { id: "H01", column: "hot", parser: "github_trending", vendor: "GitHub", label: "Trending", url: "https://github.com/trending", page: "https://github.com/trending", enabled: true },
+  { id: "H01", column: "hot", parser: "github_trending", vendor: "GitHub", label: "Trending", url: "https://github.com/trending/", page: "https://github.com/trending/", enabled: true },
   { id: "H02", column: "hot", parser: "hf_trending", vendor: "Hugging Face", label: "模型趋势", url: "https://huggingface.co/api/models?sort=trendingScore&limit=30", page: "https://huggingface.co/models?sort=trending", enabled: true },
   { id: "H03", column: "hot", parser: "kaggle_competitions", vendor: "Kaggle", label: "竞赛", url: "https://www.kaggle.com/api/v1/competitions/list?sortBy=latestDeadline", page: "https://www.kaggle.com/competitions", enabled: false, needs: "kaggle" },
 ];
