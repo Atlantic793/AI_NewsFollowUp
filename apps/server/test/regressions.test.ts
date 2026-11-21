@@ -38,6 +38,37 @@ afterEach(() => {
 const post = (app: Hono, url: string, body: unknown) => app.request(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 describe("采集结果可追溯且差分稳定", () => {
+  it.each([false, true])("规则概括不会阻止之后的真实模型概括，模型概括仍可复用（当前行带规则概括：%s）", async (hasLocalBrief) => {
+    const { deps } = setup();
+    const source = sourceById("N02")!;
+    const excerpt = "A new model is available today.";
+    const cleaned = clean(source, { column: "event", drafts: [{ type: "news", title: "Introducing model-x", date: "2026-11-21", detail: excerpt, url: source.page, excerpt }] }, "2026-11-21");
+    const rule = await assist(deps, source, excerpt, cleaned, { column: "event", rows: [], rejected: [] });
+    vi.stubEnv("OPENAI_API_KEY", "test-only");
+    const fetchImpl = vi.fn(async () => Response.json({ choices: [{ message: { content: JSON.stringify({ briefs: [{ excerpt, brief: "新模型已上线。" }] }) } }] }));
+    const modelDeps = { ...deps, fetchImpl: fetchImpl as typeof fetch };
+    const model = await assist(modelDeps, source, excerpt, hasLocalBrief ? rule.set : cleaned, rule.set);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(model.set.rows[0].brief).toBe("新模型已上线。");
+    await assist(modelDeps, source, excerpt, cleaned, model.set);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("长页补抽被拒绝时，同时保留截断说明和字段核对失败原因", async () => {
+    const { deps } = setup();
+    vi.stubEnv("OPENAI_API_KEY", "test-only");
+    const source = sourceById("N02")!;
+    const excerpt = "A new model is available today.";
+    const body = `<item><title>Introducing model-x</title><description>${excerpt}</description><pubDate>2026-11-21</pubDate></item>${"正文".repeat(13000)}`;
+    const fetchImpl = vi.fn(async () => Response.json({ choices: [{ message: { content: JSON.stringify({ rows: [{ type: "news", title: "Introducing model-x", date: "2026-11-21", detail: excerpt, url: source.page, excerpt }] }) } }] }));
+    const empty = { column: "event" as const, rows: [], rejected: [] };
+    const outcome = await assist({ ...deps, fetchImpl: fetchImpl as typeof fetch }, source, body, empty, empty);
+    expect(outcome.kept).toBe(0);
+    expect(outcome.dropped).toBe(1);
+    expect(outcome.note).toContain("正文超过 24000 字");
+    expect(outcome.note).toContain("模型抽出的字段对不上原文");
+  });
+
   it("同一天第二轮失败不会覆盖第一轮原文和哈希", async () => {
     const { deps, store, pages } = setup();
     const url = sourceById("H01")!.url;

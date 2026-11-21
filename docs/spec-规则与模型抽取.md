@@ -41,7 +41,7 @@ robots 拒绝、401/403、登录墙都不交给模型。这些轮次没有可核
 | 接口 | 现有 OpenAI 兼容体：`POST {OPENAI_BASE_URL}/chat/completions` | `.env` 使用 `OPENAI_BASE_URL=https://api.deepseek.com`、`OPENAI_MODEL=deepseek-chat`、`OPENAI_API_KEY` |
 | 抽取触发 | 仅整页合格行为 0，且正文是 200 的正常文档 | 大表重抽会更慢，也更容易改数字 |
 | 概括与补空 | 规则成功后仍做，但只写 `brief` 和原本为空的额度、重置、条件 | 直接提高清晰性；不触碰已核对字段 |
-| 概括缓存 | 同一行的 `excerpt` 未变且已有 `brief` 时不再请求模型 | 否则每轮措辞都变，清晰性和时效性一起变差 |
+| 概括缓存 | 同一行的 `excerpt` 未变且已有模型 `brief` 时不再请求；规则降级概括不当作模型缓存 | 避免重复生成，同时允许密钥配置或模型恢复后重新概括 |
 | 核对 | 纯函数放在 `packages/core`，位于模型输出之后、`clean()` 之前 | 测试不必联网 |
 | 被拒绝的页面 | 不解析响应体，不调用模型；保留上次成功行 | 错误页和拒绝页没有可核对的价格 |
 | 迁移 | 只 `ALTER TABLE` 加列。禁止因 `user_version` 较低而 `DROP` 现有表 | 当前 `store.ts` 在版本较低时会删表，实现时必须拿掉这条路径 |

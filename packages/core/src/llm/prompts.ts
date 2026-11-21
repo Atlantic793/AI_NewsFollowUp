@@ -1,4 +1,11 @@
 export function extractPrompt(column: "price" | "event" | "rank" | "hot", page: string, body: string): { system: string; user: string } {
+  const evidence = column === "event"
+    ? "动态的 excerpt 必须同时覆盖标题、日期和正文，不能只摘简介。RSS/XML 新闻应逐字复制完整的 <item>...</item> 块（包括 title、pubDate 和 link），保留原有空格和换行；Markdown 日期位于上级标题时，从该日期标题连续摘到条目正文。没有完整日期依据的条目不要返回。"
+    : column === "price"
+      ? "价目的 excerpt 必须同时包含产品名、计价单位和该格价格；额度、重置和条件中的整数也必须出现在该片段中。"
+      : column === "rank"
+        ? "排名的 excerpt 必须包含模型名、完整分数及所填票数，不能借用模型版本号作为名次。"
+        : "热榜的 excerpt 应覆盖条目名称和介绍，链接照原文填写。";
   const shape = column === "price"
     ? '{"rows":[{"kind":"api 或 plan","product":"","tier":"","metric":"","condition":"","price":"","unit":"","quota":"","reset":"","excerpt":""}]}'
     : column === "rank"
@@ -7,7 +14,7 @@ export function extractPrompt(column: "price" | "event" | "rank" | "hot", page: 
         ? '{"rows":[{"rank":"","title":"","url":"","heat":"","summary":"","excerpt":""}]}'
         : '{"rows":[{"type":"release 或 news 或 status 或 incident","title":"","date":"","detail":"","url":"","excerpt":""}]}';
   return {
-    system: "你是数据采集作业的摘录员。只根据给定原文返回一个 JSON 对象。excerpt 必须是原文里的连续子串。金额、分数、百分比、日期必须在该条 excerpt 里逐字出现。不要编造，不要改数字。价目一格一行。热榜每条必须有自己的链接。排名只有原文印了名次才填 rank，否则 basis 用 sorted。不要输出 cn_access。",
+    system: `你是数据采集作业的摘录员。只根据给定原文返回一个 JSON 对象。excerpt 必须是原文里的连续子串。金额、整数、分数、百分比、日期必须在该条 excerpt 里逐字出现。不要编造，不要改数字。价目一格一行。热榜每条必须有自己的链接。排名只有原文印了名次才填 rank，否则 basis 用 sorted。不要输出 cn_access。${evidence}`,
     user: `页面：${page}\n栏目：${column}\n按这个形状返回：${shape}\n\n原文：\n${body}`,
   };
 }

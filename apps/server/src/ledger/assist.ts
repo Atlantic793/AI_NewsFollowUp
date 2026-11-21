@@ -68,7 +68,8 @@ async function fillFromModel(deps: AppDeps, source: SourceDef, body: string, cle
   const kept = set.rows.length;
   const dropped = gated.dropped.length;
   if (kept === 0) {
-    return { set: cleaned, drafts: drafts.length, kept: 0, dropped, note: note || (gated.dropped.length > 0 || drafts.length > 0 ? "模型抽出的字段对不上原文" : "模型没有返回可用结果") };
+    const reason = gated.dropped.length > 0 || drafts.length > 0 ? "模型抽出的字段对不上原文" : "模型没有返回可用结果";
+    return { set: cleaned, drafts: drafts.length, kept: 0, dropped, note: [note, reason].filter(Boolean).join("。") };
   }
   return { set: withLocalBriefs(source, set), drafts: drafts.length, kept, dropped, note };
 }
@@ -211,10 +212,11 @@ function usableHotBrief(brief: string): boolean {
 function carryBriefs(rows: readonly EventRow[], previous: CleanedSet): EventRow[] {
   if (previous.column !== "event") return rows.map((row) => ({ ...row }));
   return rows.map((row) => {
-    const old = previous.rows.find((item) => item.excerpt === row.excerpt && item.title === row.title && item.brief);
+    // 规则降级生成的概括不能当作模型缓存，模型恢复后应重新尝试。
+    const old = previous.rows.find((item) => item.excerpt === row.excerpt && item.title === row.title && item.brief && item.brief !== eventSentence(item));
     if (old) return { ...row, brief: old.brief };
     if (row.detail.startsWith("正常")) return { ...row, brief: eventSentence(row) };
-    return { ...row };
+    return { ...row, brief: row.brief === eventSentence(row) ? "" : row.brief };
   });
 }
 
