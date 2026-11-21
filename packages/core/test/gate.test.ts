@@ -15,7 +15,7 @@ describe("模型候选核对", () => {
   const body = "价目 deepseek-chat 输入 $20 / 1M tokens。另一行 $8。排名模型甲 91.2 第 3 名。";
 
   it("片段里有 $20 就留下，只有 $99 就丢掉", () => {
-    const kept = gatePriceDrafts(body, [price({ excerpt: "deepseek-chat 输入 $20" })]);
+    const kept = gatePriceDrafts(body, [price({ excerpt: "deepseek-chat 输入 $20 / 1M tokens" })]);
     const dropped = gatePriceDrafts(body, [price({ price: "$99", excerpt: "deepseek-chat 输入 $20" })]);
     expect(kept.drafts).toHaveLength(1);
     expect(dropped.drafts).toHaveLength(0);

@@ -16,8 +16,8 @@ export interface FieldDiff {
 }
 
 export const comparePrice = (row: PriceRow): ComparedRow => ({
-  key: priceKey(row),
-  label: [row.product, row.tier, row.metric, row.condition].filter(Boolean).join(" · "),
+  key: priceKey({ ...row, condition: row.comparison?.condition ?? row.condition }),
+  label: [row.product, row.tier, row.metric, row.comparison?.condition ?? row.condition].filter(Boolean).join(" · "),
   fields: { 价格: row.price, 单位: row.unit, 额度: row.quota, 重置: row.reset },
 });
 
@@ -80,7 +80,7 @@ function escapeRegExp(value: string): string {
 
 /**
  * 整段匹配：名字等于产品名或模型名，或是「 · 」分开的一整段，
- * 或是不少于 6 个字符、停在词边界上的开头。pro、opus、4 这种短词不算。
+ * 或是不少于 6 个字符、两侧都有名称边界的完整名字。pro、opus、4 这种短词不算。
  */
 export function watchHits(name: string, haystack: string): boolean {
   const needle = name.trim().toLocaleLowerCase();
@@ -89,5 +89,5 @@ export function watchHits(name: string, haystack: string): boolean {
   if (!field) return false;
   if (field === needle || field.split(/\s*·\s*/).some((segment) => segment === needle)) return true;
   if (needle.length < 6) return false;
-  return new RegExp(`^${escapeRegExp(needle)}([^\\p{L}\\p{N}]|$)`, "u").test(field);
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}_.-])${escapeRegExp(needle)}(?=$|[^\\p{L}\\p{N}_.-])`, "u").test(field);
 }

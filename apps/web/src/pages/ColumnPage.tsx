@@ -36,6 +36,7 @@ interface Brief {
 
 interface Shown {
   id: number;
+  rowIds: number[];
   sourceId: string;
   facet: string;
   cells: ReactNode[];
@@ -100,8 +101,13 @@ export function ColumnPage() {
 
   async function togglePush() {
     if (!data) return;
-    await request(`/api/ledger/column/${column}/push`, { method: "POST", body: JSON.stringify({ enabled: !data.push }) });
-    load();
+    setError("");
+    try {
+      await request(`/api/ledger/column/${column}/push`, { method: "POST", body: JSON.stringify({ enabled: !data.push }) });
+      load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "推送开关没有更新。");
+    }
   }
 
   const shape = useMemo(() => shapeOf(column, data?.rows ?? [], data?.sources ?? [], column === "price" && grouped), [column, data, grouped]);
@@ -113,14 +119,15 @@ export function ColumnPage() {
   const sourceOf = (id: string) => data?.sources.find((item) => item.id === id);
 
   async function summarize(rowId?: number) {
-    const text = rowId ? (shape.items.find((item) => item.id === rowId)?.title ?? query) : query;
+    const item = rowId === undefined ? undefined : shape.items.find((item) => item.id === rowId);
+    const text = item?.title ?? query;
     if (!text.trim()) return;
     setBriefBusy(true);
     setError("");
     try {
       setBrief(await request<Brief>(`/api/ledger/column/${column}/brief`, {
         method: "POST",
-        body: JSON.stringify({ query: text, rowId }),
+        body: JSON.stringify({ query: text, rowIds: item?.rowIds }),
       }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "概括没有完成。");
@@ -237,6 +244,7 @@ function emptyText(source: SourceView | null, hasRows: boolean): string {
 function priceItem(row: PriceView, extra = ""): Shown {
   return {
     id: row.id,
+    rowIds: [row.id],
     sourceId: row.sourceId,
     facet: row.kind,
     cells: [
@@ -273,6 +281,7 @@ function groupPriceItems(rows: readonly PriceView[]): Shown[] {
     if (!head) return priceItem(list[0] as PriceView);
     const rest = list.filter((row) => row !== head).map((row) => `${row.metric} ${row.price}${row.unit ? ` ${row.unit}` : ""}`);
     const item = priceItem(head, [...rest, head.quota, head.reset].filter(Boolean).join("；"));
+    item.rowIds = list.map((row) => row.id);
     item.search = list.map((row) => `${row.vendor} ${row.product} ${row.metric} ${row.condition}`).join(" ").toLocaleLowerCase();
     item.excerpt = list.map((row) => `${row.metric} ${row.price}\n${row.excerpt}`).join("\n\n");
     return item;
@@ -294,6 +303,7 @@ function shapeOf(kind: Kind, rows: unknown[], sources: SourceView[], groupPrices
         facets: [],
         items: (rows as RankView[]).map((row) => ({
           id: row.id,
+          rowIds: [row.id],
           sourceId: row.sourceId,
           facet: "",
           cells: [row.board, <span key="r" className="num">{row.basis === "sorted" ? `${row.rank}（按分数）` : row.rank}</span>, <b key="m">{row.model}</b>, row.org || "—", <span key="s" className="num">{row.score}</span>, row.votes || "—", row.boardDate || "页面未印日期"],
@@ -313,6 +323,7 @@ function shapeOf(kind: Kind, rows: unknown[], sources: SourceView[], groupPrices
         facets: [],
         items: (rows as HotView[]).map((row) => ({
           id: row.id,
+          rowIds: [row.id],
           sourceId: row.sourceId,
           facet: "",
           cells: [row.site, <span key="r" className="num">{row.rank}</span>, <a key="t" href={row.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>{row.title}</a>, row.heat.replace(/(\d[\d,]*)\s+stars today/gi, "$1 个今日星标") || "—", row.summary || "—"],
@@ -333,6 +344,7 @@ function shapeOf(kind: Kind, rows: unknown[], sources: SourceView[], groupPrices
         facets: types.map((type) => ({ id: type, label: eventTypeName(type) })),
         items: (rows as EventView[]).map((row) => ({
           id: row.id,
+          rowIds: [row.id],
           sourceId: row.sourceId,
           facet: row.type,
           cells: [<span key="d" className="num nowrap">{row.date}</span>, <span key="v" className="nowrap">{row.vendor || vendorOf(row.sourceId)}</span>, <span key="t" className={`tag tag-${row.type}`}>{eventTypeName(row.type)}</span>, <b key="h">{row.title}</b>, <span key="x" className="clip">{row.detail || "—"}</span>],

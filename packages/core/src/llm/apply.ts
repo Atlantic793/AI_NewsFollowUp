@@ -1,6 +1,7 @@
 import { groundBrief } from "../brief.js";
 import { hasHan } from "../zh.js";
 import type { EventRow, HotRow, PriceRow } from "../rows.js";
+import { namedIn, numbersIn } from "./gate.js";
 
 export interface PriceGap {
   product: string;
@@ -16,16 +17,6 @@ export interface GapResult {
   dropped: number;
 }
 
-function compact(text: string): string {
-  return text.replace(/\s/g, "");
-}
-
-function numbersIn(text: string, excerpt: string): boolean {
-  const tokens = text.match(/[$¥￥]\s?\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?%|\d[\d,]*(?:\.\d+)?/g) ?? [];
-  const body = compact(excerpt);
-  return tokens.every((token) => body.includes(compact(token)));
-}
-
 /** 只填仍为空的额度、重置、条件。已有价格原样留下。 */
 export function applyPriceGaps(body: string, rows: readonly PriceRow[], gaps: readonly PriceGap[]): GapResult {
   const next = rows.map((row) => ({ ...row }));
@@ -35,26 +26,32 @@ export function applyPriceGaps(body: string, rows: readonly PriceRow[], gaps: re
     const product = gap.product.trim();
     const excerpt = gap.excerpt.trim();
     const filling = [gap.quota, gap.reset, gap.condition].map((item) => item.trim()).filter(Boolean);
-    if (!product || !excerpt || !body.includes(excerpt) || !excerpt.toLocaleLowerCase().includes(product.toLocaleLowerCase()) || filling.length === 0 || filling.some((item) => !numbersIn(item, excerpt))) {
+    if (!product || !excerpt || !body.includes(excerpt) || !namedIn(product, excerpt) || filling.length === 0 || filling.some((item) => !numbersIn(item, excerpt))) {
       dropped += 1;
       continue;
     }
     let used = false;
     for (const row of next) {
       if (row.product.toLocaleLowerCase() !== product.toLocaleLowerCase()) continue;
+      const comparison = row.comparison ?? { condition: row.condition, quota: row.quota, reset: row.reset };
+      let rowUsed = false;
       if (!row.quota && gap.quota.trim()) {
         row.quota = gap.quota.trim();
-        used = true;
+        rowUsed = true;
       }
       if (!row.reset && gap.reset.trim()) {
         row.reset = gap.reset.trim();
-        used = true;
+        rowUsed = true;
       }
       if (!row.condition && gap.condition.trim()) {
         row.condition = gap.condition.trim();
-        used = true;
+        rowUsed = true;
       }
-      if (used && !row.excerpt.includes(excerpt)) row.excerpt = `${row.excerpt}\n${excerpt}`.slice(0, 1200);
+      if (rowUsed) {
+        row.comparison = { ...comparison, evidence: [...new Set([...(comparison.evidence ?? []), excerpt])] };
+        used = true;
+        if (!row.excerpt.includes(excerpt)) row.excerpt = `${row.excerpt}\n${excerpt}`.slice(0, 1200);
+      }
     }
     if (used) kept += 1;
     else dropped += 1;

@@ -28,14 +28,24 @@ export function WatchPage() {
 
   async function add() {
     if (!draft.trim()) return;
-    await request("/api/ledger/watch", { method: "POST", body: JSON.stringify({ name: draft }) });
-    setDraft("");
-    load();
+    setError("");
+    try {
+      await request("/api/ledger/watch", { method: "POST", body: JSON.stringify({ name: draft }) });
+      setDraft("");
+      load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "追踪名单没有更新。");
+    }
   }
 
   async function remove(name: string) {
-    await request(`/api/ledger/watch/${encodeURIComponent(name)}`, { method: "DELETE" });
-    load();
+    setError("");
+    try {
+      await request(`/api/ledger/watch/${encodeURIComponent(name)}`, { method: "DELETE" });
+      load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "没有移除这个名字。");
+    }
   }
 
   return (

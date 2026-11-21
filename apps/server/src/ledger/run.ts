@@ -17,6 +17,7 @@ export interface RunProgress {
 
 /** 依次跑选中的来源；同一个网站两次请求之间至少隔 GAP_MS。 */
 export async function runLedger(deps: AppDeps, store: LedgerStore, ids: readonly string[] | null, onStep: (progress: RunProgress) => void): Promise<void> {
+  const diffCursor = store.latestDiffId();
   const enabled = new Map(store.sources().map((source) => [source.id, source.enabled]));
   const sources = SOURCES.filter((source) => (ids ? ids.includes(source.id) : enabled.get(source.id)));
   const lastHit = new Map<string, number>();
@@ -26,7 +27,7 @@ export async function runLedger(deps: AppDeps, store: LedgerStore, ids: readonly
     const record = await capture(deps, store, source, lastHit, robotsCache);
     store.recordRun(record.run, record.rejected);
   }
-  await writeDigests(deps, store, sources).catch(() => undefined);
+  await writeDigests(deps, store, sources, diffCursor).catch(() => undefined);
   onStep({ done: sources.length, total: sources.length, current: "" });
 }
 
@@ -59,7 +60,7 @@ async function capture(deps: AppDeps, store: LedgerStore, source: SourceDef, las
 
   run.bytes = Buffer.byteLength(page.body, "utf8");
   run.hash = createHash("sha256").update(page.body).digest("hex");
-  run.rawPath = await saveRaw(deps.dataDir, day, source.id, page.contentType, page.body);
+  run.rawPath = await saveRaw(deps.dataDir, day, source.id, run.hash, page.contentType, page.body);
   if (isLoginWall(page.body)) return { run: { ...run, status: "没抽出", error: keptLine(store, source, "页面像登录墙，没有正文，不交给模型") }, rejected: [] };
 
   let extracted: Extracted;
@@ -95,7 +96,8 @@ async function capture(deps: AppDeps, store: LedgerStore, source: SourceDef, las
     const why = run.error || (extracted.drafts.length === 0 ? "页面里没有找到这一栏要的表或条目" : `抽到 ${extracted.drafts.length} 条，全部没通过清洗`);
     return { run: { ...run, status: "没抽出", error: keptLine(store, source, why) }, rejected: cleaned.rejected };
   }
-  run.changed = store.replace(source, set, startedAt);
+  const unchanged = source.column === "price" && store.lastSuccessfulHash(source.id) === run.hash;
+  run.changed = store.replace(source, set, startedAt, unchanged);
   run.stored = set.rows.length;
   return { run: { ...run, status: "ok", error: run.error }, rejected: cleaned.rejected };
 }
@@ -185,13 +187,14 @@ function keptLine(store: LedgerStore, source: SourceDef, why: string): string {
 const COLUMN_NAME: Record<ColumnKind, string> = { hot: "热榜", price: "价目", rank: "排名", event: "厂商动态" };
 
 /** 推送开关打开的栏目，把这一轮的变化写进 dataDir/digests。 */
-async function writeDigests(deps: AppDeps, store: LedgerStore, sources: readonly SourceDef[]): Promise<void> {
+async function writeDigests(deps: AppDeps, store: LedgerStore, sources: readonly SourceDef[], diffCursor: number): Promise<void> {
   const day = shanghaiDate(deps.now());
   const columns = [...new Set(sources.map((source) => source.column))];
   const folder = path.join(deps.dataDir, "digests");
+  const changes = store.diffsAfter(diffCursor);
   for (const column of columns) {
     if (!store.setting(`push_${column}`, column === "hot")) continue;
-    const diffs = store.diffs(300).filter((diff) => diff.column === column && diff.fetchedAt.startsWith(day));
+    const diffs = changes.filter((diff) => diff.column === column);
     const lines = diffs.length === 0
       ? [`# ${COLUMN_NAME[column]} ${day}`, "这一栏本轮没有相对上一轮的变化。"]
       : [`# ${COLUMN_NAME[column]} ${day}`, ...diffs.map((diff) => `- ${diff.label}：${diff.field} ${shownDiff(diff.field, diff.oldValue) || "空"} → ${shownDiff(diff.field, diff.newValue)}`)];
@@ -211,11 +214,13 @@ function httpReason(status: number): string {
   return `HTTP ${status}`;
 }
 
-async function saveRaw(dataDir: string, day: string, id: string, contentType: string, body: string): Promise<string> {
+async function saveRaw(dataDir: string, day: string, id: string, hash: string, contentType: string, body: string): Promise<string> {
   const ext = /json/i.test(contentType) ? "json" : /xml|rss/i.test(contentType) ? "xml" : /markdown/i.test(contentType) ? "md" : /html/i.test(contentType) ? "html" : "txt";
   const folder = path.join(dataDir, "raw", day);
   await mkdir(folder, { recursive: true });
-  const file = path.join(folder, `${id}.${ext}`);
-  await writeFile(file, body, "utf8");
+  const file = path.join(folder, `${id}-${hash}.${ext}`);
+  await writeFile(file, body, { encoding: "utf8", flag: "wx" }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") throw error;
+  });
   return file;
 }

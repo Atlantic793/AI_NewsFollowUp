@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { Hono } from "hono";
-import { BLOCKED_PAGES, USD_TO_CNY, cnyAmount, cnyLabel, displayMoneyText, fallbackFor, hasHan, introText, shanghaiDate, showIntro, shownText, sourceById, watchHits, type BriefHit, type ColumnKind } from "@followup/core";
+import { BLOCKED_PAGES, USD_TO_CNY, cnyAmount, cnyLabel, displayMoneyText, fallbackFor, introText, shanghaiDate, showIntro, shownText, sourceById, watchHits, type BriefHit, type ColumnKind } from "@followup/core";
 import { bad } from "../http-error.js";
 import type { AppDeps } from "../types.js";
 import { llmBrief } from "./brief.js";
@@ -23,6 +23,21 @@ const RAW_LIMIT = 400_000;
 function columnParam(value: string): ColumnKind {
   if (!COLUMNS.has(value)) throw bad(400, "COLUMN_INVALID", "没有这一栏。");
   return value as ColumnKind;
+}
+
+async function jsonObject(request: { json(): Promise<unknown> }): Promise<Record<string, unknown>> {
+  const body = await request.json().catch(() => { throw bad(400, "BODY_INVALID", "请求内容必须是 JSON 对象。"); });
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw bad(400, "BODY_INVALID", "请求内容必须是 JSON 对象。");
+  return body as Record<string, unknown>;
+}
+
+function enabledValue(value: unknown): boolean {
+  if (typeof value !== "boolean") throw bad(400, "ENABLED_INVALID", "开关值必须是 true 或 false。");
+  return value;
+}
+
+function validRowId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 export function mountLedger(app: Hono, deps: AppDeps): LedgerStore {
@@ -69,19 +84,24 @@ export function mountLedger(app: Hono, deps: AppDeps): LedgerStore {
 
   app.post("/api/ledger/column/:kind/brief", async (c) => {
     const column = columnParam(c.req.param("kind"));
-    const body = await c.req.json().catch(() => ({})) as { query?: string; rowId?: number };
-    const query = body.query?.trim() ?? "";
+    const body = await jsonObject(c.req);
+    const query = typeof body.query === "string" ? body.query.trim() : "";
     if (!query) throw bad(400, "QUERY_INVALID", "先写要概括的词。");
+    if (body.rowId !== undefined && !validRowId(body.rowId)) throw bad(400, "ROW_INVALID", "行号必须是正整数。");
+    if (body.rowIds !== undefined && (!Array.isArray(body.rowIds) || body.rowIds.length === 0 || !body.rowIds.every(validRowId))) throw bad(400, "ROW_INVALID", "行号必须是正整数列表。");
+    if (body.rowId !== undefined && body.rowIds !== undefined) throw bad(400, "ROW_INVALID", "请指定一组行号。");
+    const rowIds = Array.isArray(body.rowIds) ? [...new Set(body.rowIds as number[])] : validRowId(body.rowId) ? [body.rowId] : undefined;
     const rows = rowsFor(store, column);
-    const hits = briefHits(rows, query, body.rowId);
+    const hits = briefHits(rows, query, rowIds);
+    if (rowIds && hits.length !== rowIds.length) throw bad(404, "ROW_NOT_FOUND", "选中的数据已更新，请刷新后重选。");
     const brief = await llmBrief(deps, query, hits);
     return c.json({ ...brief, hits: hits.length });
   });
 
   app.post("/api/ledger/column/:kind/push", async (c) => {
     const column = columnParam(c.req.param("kind"));
-    const body = await c.req.json().catch(() => ({})) as { enabled?: boolean };
-    store.setSetting(`push_${column}`, Boolean(body.enabled));
+    const body = await jsonObject(c.req);
+    store.setSetting(`push_${column}`, enabledValue(body.enabled));
     return c.json({ ok: true });
   });
 
@@ -90,8 +110,8 @@ export function mountLedger(app: Hono, deps: AppDeps): LedgerStore {
   app.post("/api/ledger/sources/:id", async (c) => {
     const id = c.req.param("id");
     if (!sourceById(id)) throw bad(404, "SOURCE_NOT_FOUND", "没有这个来源。");
-    const body = await c.req.json().catch(() => ({})) as { enabled?: boolean };
-    store.setEnabled(id, Boolean(body.enabled));
+    const body = await jsonObject(c.req);
+    store.setEnabled(id, enabledValue(body.enabled));
     return c.json({ ok: true });
   });
 
@@ -116,7 +136,8 @@ export function mountLedger(app: Hono, deps: AppDeps): LedgerStore {
 
   app.post("/api/ledger/run", async (c) => {
     if (run.state === "running") throw bad(409, "JOB_BUSY", "这一轮还没结束。");
-    const body = await c.req.json().catch(() => ({})) as { ids?: unknown };
+    const body = await jsonObject(c.req);
+    if (body.ids !== undefined && !Array.isArray(body.ids)) throw bad(400, "SOURCE_INVALID", "来源必须是编号列表。");
     const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === "string" && Boolean(sourceById(id))) : null;
     if (ids && ids.length === 0) throw bad(400, "SOURCE_NOT_FOUND", "没有这个来源。");
     Object.assign(run, { state: "running", done: 0, total: ids?.length ?? 0, current: "", error: "" });
@@ -151,15 +172,15 @@ export function mountLedger(app: Hono, deps: AppDeps): LedgerStore {
   });
 
   app.post("/api/ledger/watch", async (c) => {
-    const body = await c.req.json().catch(() => ({})) as { name?: string };
-    const name = body.name?.trim() ?? "";
+    const body = await jsonObject(c.req);
+    const name = typeof body.name === "string" ? body.name.trim() : "";
     if (!name) throw bad(400, "NAME_INVALID", "写上模型或套餐的名字。");
     store.addWatch(name, deps.now().toISOString());
     return c.json({ ok: true });
   });
 
   app.delete("/api/ledger/watch/:name", (c) => {
-    store.removeWatch(decodeURIComponent(c.req.param("name")));
+    store.removeWatch(c.req.param("name"));
     return c.json({ ok: true });
   });
 
@@ -183,10 +204,11 @@ function pickHomePrices(rows: readonly PriceView[]): PriceView[] {
   return firstPer(ranked, (row) => row.vendor, 1);
 }
 
-function briefHits(rows: PriceView[] | RankView[] | HotView[] | EventView[], query: string, rowId?: number): BriefHit[] {
+function briefHits(rows: PriceView[] | RankView[] | HotView[] | EventView[], query: string, rowIds?: readonly number[]): BriefHit[] {
   const needle = query.toLocaleLowerCase();
-  const picked = typeof rowId === "number" ? rows.filter((row) => row.id === rowId) : rows.filter((row) => briefHaystack(row).toLocaleLowerCase().includes(needle));
-  return picked.slice(0, 12).map((row) => ({ sourceId: row.sourceId, title: briefTitle(row), excerpt: row.excerpt }));
+  const selected = rowIds ? new Set(rowIds) : null;
+  const picked = selected ? rows.filter((row) => selected.has(row.id)) : rows.filter((row) => briefHaystack(row).toLocaleLowerCase().includes(needle)).slice(0, 12);
+  return picked.map((row) => ({ sourceId: row.sourceId, title: briefTitle(row), excerpt: row.excerpt }));
 }
 
 function briefHaystack(row: PriceView | RankView | HotView | EventView): string {
@@ -247,13 +269,8 @@ function presentPrice(row: PriceView) {
 
 function presentEvent(row: EventView) {
   const brief = introText(row.brief);
-  const detail = shownText(showIntro(row.detail, row.brief, true));
-  const title = introText(row.title) || (hasHan(row.title) && englishTitle(row.title) ? shownText(row.title) : "") || brief || "说明见右侧原文";
-  return { ...row, title, detail, brief: brief || detail };
-}
-
-function englishTitle(text: string): boolean {
-  return (text.match(/[A-Za-z]{4,}/g) ?? []).length <= 3;
+  const detail = shownText(introText(row.detail) || row.detail);
+  return { ...row, title: row.title, detail, brief: brief || detail };
 }
 
 function presentHeat(heat: string): string {

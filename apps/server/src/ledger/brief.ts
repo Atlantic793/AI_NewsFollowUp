@@ -14,7 +14,7 @@ export async function llmBrief(deps: AppDeps, query: string, hits: readonly Brie
   const base = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
   const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
   const corpus = hits.map((hit) => hit.excerpt).join("\n");
-  const packed = hits.slice(0, 12).map((hit) => `【${hit.sourceId} ${hit.title}】\n${hit.excerpt.slice(0, 1200)}`).join("\n\n");
+  const packed = hits.map((hit) => `【${hit.sourceId} ${hit.title}】\n${hit.excerpt.slice(0, 1200)}`).join("\n\n");
   try {
     const response = await deps.fetchImpl(`${base}/chat/completions`, {
       method: "POST",

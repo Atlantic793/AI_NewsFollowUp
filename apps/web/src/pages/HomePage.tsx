@@ -36,8 +36,13 @@ export function HomePage() {
 
   async function toggleHot(key: keyof typeof HOT_IDS) {
     if (!data) return;
-    await request(`/api/ledger/sources/${HOT_IDS[key]}`, { method: "POST", body: JSON.stringify({ enabled: !data.hotEnabled[key] }) });
-    load();
+    setError("");
+    try {
+      await request(`/api/ledger/sources/${HOT_IDS[key]}`, { method: "POST", body: JSON.stringify({ enabled: !data.hotEnabled[key] }) });
+      load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "来源开关没有更新。");
+    }
   }
 
   const day = data ? data.day.replaceAll("-", ".") : "";

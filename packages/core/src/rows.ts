@@ -57,6 +57,8 @@ export interface PriceRow {
   reset: string;
   excerpt: string;
   brief: string;
+  /** 模型补充前的规则字段与依据，用于稳定差分和复用已核对的补充。 */
+  comparison?: { condition: string; quota: string; reset: string; evidence?: string[] };
 }
 
 export interface RankRow {

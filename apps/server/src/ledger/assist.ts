@@ -23,6 +23,7 @@ import {
   type HotRow,
   type PriceDraft,
   type PriceGap,
+  type PriceRow,
   type RankDraft,
   type SourceDef,
 } from "@followup/core";
@@ -75,7 +76,7 @@ async function fillFromModel(deps: AppDeps, source: SourceDef, body: string, cle
 async function polish(deps: AppDeps, source: SourceDef, body: string, cleaned: CleanedSet, previous: CleanedSet): Promise<AssistOutcome> {
   switch (cleaned.column) {
     case "price":
-      return polishPrices(deps, source, body, cleaned);
+      return polishPrices(deps, source, body, cleaned, previous);
     case "event":
       return polishEvents(deps, source, cleaned, previous);
     case "rank":
@@ -89,7 +90,8 @@ async function polish(deps: AppDeps, source: SourceDef, body: string, cleaned: C
   }
 }
 
-async function polishPrices(deps: AppDeps, source: SourceDef, body: string, cleaned: CleanedSet & { column: "price" }): Promise<AssistOutcome> {
+async function polishPrices(deps: AppDeps, source: SourceDef, body: string, cleaned: CleanedSet & { column: "price" }, previous: CleanedSet): Promise<AssistOutcome> {
+  cleaned = { ...cleaned, rows: carryPriceGaps(body, cleaned.rows, previous) };
   const needs = cleaned.rows.some((row) => !row.quota || !row.reset || !row.condition);
   if (!needs || !process.env.OPENAI_API_KEY) return { set: withLocalBriefs(source, cleaned), drafts: 0, kept: 0, dropped: 0, note: "" };
   const clipped = clipBody(body);
@@ -102,6 +104,25 @@ async function polishPrices(deps: AppDeps, source: SourceDef, body: string, clea
   const applied = applyPriceGaps(body, cleaned.rows.map((row) => ({ ...row, brief: "" })), gaps);
   const set = withLocalBriefs(source, { column: "price", rows: applied.rows, rejected: cleaned.rejected });
   return { set, drafts: gaps.length, kept: applied.kept, dropped: applied.dropped, note };
+}
+
+/** 原文依据仍在时，保留已核对的补充；模型暂不可用不会把额度或条件抹掉。 */
+function carryPriceGaps(body: string, rows: readonly PriceRow[], previous: CleanedSet): PriceRow[] {
+  if (previous.column !== "price") return rows.map((row) => ({ ...row }));
+  return rows.map((row) => {
+    const old = previous.rows.find((item) => item.product === row.product && item.tier === row.tier && item.metric === row.metric && (item.comparison?.condition ?? item.condition) === row.condition);
+    const basis = old?.comparison;
+    if (!old || !basis?.evidence?.length || !basis.evidence.every((excerpt) => body.includes(excerpt))) return { ...row };
+    const next = { ...row };
+    if (!row.quota && old.quota !== basis.quota) next.quota = old.quota;
+    if (!row.reset && old.reset !== basis.reset) next.reset = old.reset;
+    if (!row.condition && old.condition !== basis.condition) next.condition = old.condition;
+    if (next.quota !== row.quota || next.reset !== row.reset || next.condition !== row.condition) {
+      next.comparison = { condition: row.condition, quota: row.quota, reset: row.reset, evidence: basis.evidence };
+      next.excerpt = [...new Set([row.excerpt, ...basis.evidence])].join("\n").slice(0, 1200);
+    }
+    return next;
+  });
 }
 
 async function polishEvents(deps: AppDeps, source: SourceDef, cleaned: CleanedSet & { column: "event" }, previous: CleanedSet): Promise<AssistOutcome> {

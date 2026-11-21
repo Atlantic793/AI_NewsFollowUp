@@ -1,4 +1,4 @@
-import { parseMoney } from "../clean.js";
+import { parseMoney, unitName } from "../clean.js";
 import { isoDate } from "../parse/text.js";
 import type { EventDraft, HotDraft, PriceDraft, RankDraft } from "../rows.js";
 
@@ -13,12 +13,10 @@ export interface Gated<Draft> {
 }
 
 const MONEY = /[$¥￥]\s?\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*(?:美元|元|USD|CNY)/g;
-const PERCENT = /\d[\d,]*(?:\.\d+)?%/g;
-const DECIMAL = /\d+\.\d+/g;
 
 function hasRank(excerpt: string, rank: string): boolean {
   if (!/^\d+$/.test(rank)) return false;
-  return new RegExp(`(?:^|\\D)${rank}(?:\\D|$)`).test(excerpt);
+  return new RegExp(`第\\s*${rank}\\s*名|(?:^|[^\\p{L}\\p{N}_.-])${rank}(?=$|[^\\p{L}\\p{N}_.-])`, "u").test(excerpt);
 }
 
 function compact(text: string): string {
@@ -26,16 +24,24 @@ function compact(text: string): string {
 }
 
 function tokens(text: string): string[] {
-  return [...text.matchAll(MONEY), ...text.matchAll(PERCENT), ...text.matchAll(DECIMAL)].map((match) => compact(match[0]));
+  return (text.match(/[$¥￥]?\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:%|美元|元|USD|CNY))?/g) ?? []).map(compact);
 }
 
-function numbersIn(text: string, excerpt: string): boolean {
-  const body = compact(excerpt);
-  return tokens(text).every((token) => body.includes(token));
+export function numbersIn(text: string, excerpt: string): boolean {
+  const present = new Set(tokens(excerpt));
+  return tokens(text).every((token) => present.has(token));
 }
 
 function moneyCount(text: string): number {
-  return text.match(/[$¥￥]\s?\d[\d,]*(?:\.\d+)?/g)?.length ?? 0;
+  return text.match(MONEY)?.length ?? 0;
+}
+
+export function namedIn(name: string, excerpt: string): boolean {
+  const needle = name.trim();
+  if (!needle) return false;
+  if (/\p{Script=Han}/u.test(needle)) return compact(excerpt).includes(compact(needle));
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}_.-])${escaped}(?=$|[^\\p{L}\\p{N}_.-])`, "iu").test(excerpt);
 }
 
 export function isLoginWall(body: string): boolean {
@@ -67,11 +73,20 @@ export function gatePriceDrafts(body: string, drafts: readonly PriceDraft[]): Ga
       dropped.push({ reason: "同一片段里有两个价格", excerpt: draft.excerpt });
       continue;
     }
-    if (!numbersIn(`${draft.price} ${draft.quota} ${draft.reset}`, draft.excerpt)) {
+    if (!numbersIn(`${draft.price} ${draft.quota} ${draft.reset} ${draft.condition}`, draft.excerpt)) {
       dropped.push({ reason: "金额或数字不在片段里", excerpt: draft.excerpt });
       continue;
     }
     const money = parseMoney(draft.price, draft.unit);
+    if (!namedIn(draft.product, draft.excerpt)) {
+      dropped.push({ reason: "产品名不在片段里", excerpt: draft.excerpt });
+      continue;
+    }
+    const unit = unitName(money.ok && money.unitText ? money.unitText : draft.unit, draft.kind);
+    if (unit && unitName(draft.excerpt, draft.kind) !== unit && !compact(draft.excerpt).toLowerCase().includes(compact(unit).toLowerCase())) {
+      dropped.push({ reason: "计价单位不在片段里", excerpt: draft.excerpt });
+      continue;
+    }
     if (money.ok && !compact(draft.excerpt).includes(compact(money.display)) && !draft.excerpt.includes(String(money.amount))) {
       dropped.push({ reason: "展示价不在片段里", excerpt: draft.excerpt });
       continue;
@@ -89,14 +104,26 @@ export function gateRankDrafts(body: string, drafts: readonly RankDraft[]): Gate
       dropped.push({ reason: "片段不是这次原文的子串", excerpt: draft.excerpt });
       continue;
     }
-    if (!numbersIn(draft.score, draft.excerpt)) {
+    if (tokens(draft.score).length === 0 || !numbersIn(draft.score, draft.excerpt)) {
       dropped.push({ reason: "分数不在片段里", excerpt: draft.excerpt });
+      continue;
+    }
+    if (!namedIn(draft.model, draft.excerpt) || (draft.org && !namedIn(draft.org, draft.excerpt))) {
+      dropped.push({ reason: "模型或机构不在片段里", excerpt: draft.excerpt });
+      continue;
+    }
+    if (!numbersIn(draft.votes, draft.excerpt)) {
+      dropped.push({ reason: "票数不在片段里", excerpt: draft.excerpt });
       continue;
     }
     const rank = draft.rank.trim();
     const printed = draft.basis !== "sorted" && hasRank(draft.excerpt, rank);
     const boardDate = draft.boardDate && dateOk(draft.boardDate, draft.excerpt) ? draft.boardDate : "";
     kept.push({ ...draft, basis: printed ? "printed" : "sorted", boardDate });
+  }
+  if (kept.some((draft) => draft.basis === "sorted")) {
+    kept.sort((left, right) => Number.parseFloat(right.score.replace(/[^\d.-]/g, "")) - Number.parseFloat(left.score.replace(/[^\d.-]/g, "")));
+    return { drafts: kept.map((draft, index) => ({ ...draft, rank: String(index + 1), basis: "sorted" })), dropped };
   }
   return { drafts: kept, dropped };
 }

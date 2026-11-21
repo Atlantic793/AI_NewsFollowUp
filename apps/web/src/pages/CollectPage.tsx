@@ -71,8 +71,13 @@ export function CollectPage() {
   }
 
   async function toggle(source: SourceView) {
-    await request(`/api/ledger/sources/${source.id}`, { method: "POST", body: JSON.stringify({ enabled: !source.enabled }) });
-    load();
+    setError("");
+    try {
+      await request(`/api/ledger/sources/${source.id}`, { method: "POST", body: JSON.stringify({ enabled: !source.enabled }) });
+      load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "来源开关没有更新。");
+    }
   }
 
   const visible = sources.filter((source) => filter === "all" || source.column === filter);

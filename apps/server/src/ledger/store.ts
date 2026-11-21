@@ -16,7 +16,7 @@ import {
   type SourceDef,
 } from "@followup/core";
 
-const SCHEMA = 3;
+const SCHEMA = 4;
 const SAMPLES_PER_REASON = 3;
 
 export type RunStatus = "ok" | "没抽出" | "skipped" | "failed";
@@ -122,6 +122,7 @@ export class LedgerStore {
     `);
     this.ensureColumn("ranks", "basis", "TEXT NOT NULL DEFAULT 'printed'");
     this.ensureColumn("prices", "brief", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("prices", "comparison", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("ranks", "brief", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("hot", "brief", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("events", "brief", "TEXT NOT NULL DEFAULT ''");
@@ -184,10 +185,10 @@ export class LedgerStore {
   }
 
   /** 把这个来源的旧行换成这一轮清洗后的行，返回记下的变化条数。第一次入库只当基线，不记变化。 */
-  replace(source: SourceDef, set: CleanedSet, fetchedAt: string): number {
+  replace(source: SourceDef, set: CleanedSet, fetchedAt: string, unchanged = false): number {
     const before = this.cleanedOf(source);
     const removals = set.column === "price" || set.column === "rank";
-    const diffs = before.rows.length === 0 ? [] : diffRows(comparable(before), comparable(set), removals);
+    const diffs = unchanged || before.rows.length === 0 ? [] : diffRows(comparable(before), comparable(set), removals);
     if (before.rows.length > 0) {
       this.db.prepare("INSERT INTO row_archive (source_id, column_kind, archived_at, payload) VALUES (?, ?, ?, ?)")
         .run(source.id, source.column, fetchedAt, JSON.stringify(before.rows));
@@ -234,9 +235,9 @@ export class LedgerStore {
   private insertRows(sourceId: string, set: CleanedSet, fetchedAt: string): void {
     switch (set.column) {
       case "price": {
-        const insert = this.db.prepare(`INSERT INTO prices (source_id, kind, product, tier, metric, condition, price, amount, currency, unit, quota, reset_rule, fetched_at, excerpt, brief)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-        for (const row of set.rows) insert.run(sourceId, row.kind, row.product, row.tier, row.metric, row.condition, row.price, row.amount, row.currency, row.unit, row.quota, row.reset, fetchedAt, row.excerpt, row.brief);
+        const insert = this.db.prepare(`INSERT INTO prices (source_id, kind, product, tier, metric, condition, price, amount, currency, unit, quota, reset_rule, fetched_at, excerpt, brief, comparison)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        for (const row of set.rows) insert.run(sourceId, row.kind, row.product, row.tier, row.metric, row.condition, row.price, row.amount, row.currency, row.unit, row.quota, row.reset, fetchedAt, row.excerpt, row.brief, row.comparison ? JSON.stringify(row.comparison) : "");
         return;
       }
       case "rank": {
@@ -298,6 +299,7 @@ export class LedgerStore {
         unit: text(row.unit),
         quota: text(row.quota),
         reset: text(row.reset_rule),
+        comparison: priceComparison(text(row.comparison)),
         fetchedAt: text(row.fetched_at),
         excerpt: text(row.excerpt),
         brief: text(row.brief),
@@ -375,7 +377,24 @@ export class LedgerStore {
   }
 
   diffs(limit: number): DiffView[] {
-    return (this.db.prepare("SELECT * FROM diffs ORDER BY id DESC LIMIT ?").all(limit) as Raw[]).map((row) => ({
+    return this.mapDiffs(this.db.prepare("SELECT * FROM diffs ORDER BY id DESC LIMIT ?").all(limit) as Raw[]);
+  }
+
+  latestDiffId(): number {
+    return Number((this.db.prepare("SELECT MAX(id) AS id FROM diffs").get() as { id: number | null }).id ?? 0);
+  }
+
+  lastSuccessfulHash(sourceId: string): string {
+    const row = this.db.prepare("SELECT content_hash FROM runs WHERE source_id = ? AND status = 'ok' ORDER BY id DESC LIMIT 1").get(sourceId) as { content_hash: string } | undefined;
+    return row?.content_hash ?? "";
+  }
+
+  diffsAfter(id: number): DiffView[] {
+    return this.mapDiffs(this.db.prepare("SELECT * FROM diffs WHERE id > ? ORDER BY id").all(id) as Raw[]);
+  }
+
+  private mapDiffs(rows: Raw[]): DiffView[] {
+    return rows.map((row) => ({
       id: Number(row.id),
       sourceId: text(row.source_id),
       column: columnOf(text(row.column_kind)),
@@ -413,6 +432,19 @@ export class LedgerStore {
   close(): void {
     this.db.close();
   }
+}
+
+function priceComparison(value: string): PriceRow["comparison"] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const fields = parsed as Record<string, unknown>;
+    if (typeof fields.condition === "string" && typeof fields.quota === "string" && typeof fields.reset === "string") {
+      const evidence = Array.isArray(fields.evidence) ? fields.evidence.filter((item): item is string => typeof item === "string") : undefined;
+      return { condition: fields.condition, quota: fields.quota, reset: fields.reset, evidence };
+    }
+  } catch { /* 旧数据没有规则字段时，仍按原有字段比较。 */ }
+  return undefined;
 }
 
 function mapRun(row: Raw): RunRecord {
