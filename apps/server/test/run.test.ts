@@ -1,8 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
 import { runLedger } from "../src/ledger/run.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import type { AppDeps } from "../src/types.js";
@@ -46,20 +47,23 @@ describe("采集一轮：抓取 → 抽取 → 清洗 → 入库", () => {
     const run = store.sources().find((source) => source.id === "H01")?.run;
     expect(run).toMatchObject({ status: "ok", httpStatus: 200, extracted: 6, cleaned: 6, stored: 6, changed: 0 });
     expect(readFileSync(run?.rawPath ?? "", "utf8")).toBe(fixture("H01-github-trending.html"));
+    expect(existsSync(`${dataDir}/digests/2026-11-08.md`)).toBe(true);
     store.close();
   });
 
-  it("这一页一条都对不上：记没抽出，清掉上一轮的旧行", async () => {
+  it("这一页一条都对不上：记没抽出，上次成功的行还留着", async () => {
     const pages: Record<string, Reply> = { "https://github.com/trending": { status: 200, body: fixture("H01-github-trending.html"), type: "text/html" } };
     const { dataDir, deps, store } = setup(pages);
     dirs.push(dataDir);
     await runLedger(deps, store, ["H01"], () => undefined);
-    expect(store.hot()).toHaveLength(6);
+    const kept = store.hot().length;
+    expect(kept).toBeGreaterThan(0);
 
     pages["https://github.com/trending"] = { status: 200, body: "<html><header><nav><a href='/login'>Sign in</a></nav></header></html>", type: "text/html" };
     await runLedger(deps, store, ["H01"], () => undefined);
-    expect(store.hot()).toHaveLength(0);
+    expect(store.hot()).toHaveLength(kept);
     expect(store.sources().find((source) => source.id === "H01")?.run).toMatchObject({ status: "没抽出", extracted: 0, stored: 0 });
+    expect(store.sources().find((source) => source.id === "H01")?.run?.error).toContain("上次成功的行还留着");
     store.close();
   });
 
@@ -96,6 +100,79 @@ describe("采集一轮：抓取 → 抽取 → 清洗 → 入库", () => {
     pages["https://learn.chatgpt.com/docs/pricing.md"] = { status: 200, body: markdown.replace('price="$20"', 'price="$22"'), type: "text/markdown" };
     await runLedger(deps, store, ["P02"], () => undefined);
     expect(store.diffs(10).map((diff) => [diff.label, diff.field, diff.oldValue, diff.newValue])).toContainEqual(["Plus · 订阅 · 订阅价", "价格", "$20", "$22"]);
+    expect(store.archived("P02")).toBe(1);
+    store.close();
+  });
+
+  it("403 或 robots 拒绝后，上一轮的行还在，并且不请求模型", async () => {
+    const previous = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_BASE_URL = "https://api.deepseek.com";
+    const pages: Record<string, Reply> = { "https://github.com/trending": { status: 200, body: fixture("H01-github-trending.html"), type: "text/html" } };
+    const { dataDir, deps, store, asked } = setup(pages);
+    dirs.push(dataDir);
+    await runLedger(deps, store, ["H01"], () => undefined);
+    const kept = store.hot().length;
+    const modelCalls = () => asked.filter((url) => url.includes("chat/completions")).length;
+    const afterSuccess = modelCalls();
+    pages["https://github.com/trending"] = { status: 403, body: "denied", type: "text/html" };
+    await runLedger(deps, store, ["H01"], () => undefined);
+    expect(store.hot()).toHaveLength(kept);
+    expect(store.sources().find((source) => source.id === "H01")?.run?.error).toContain("不绕过");
+    expect(modelCalls()).toBe(afterSuccess);
+
+    pages["https://github.com/robots.txt"] = { status: 200, body: "User-agent: *\nDisallow: /trending", type: "text/plain" };
+    await runLedger(deps, store, ["H01"], () => undefined);
+    expect(store.hot()).toHaveLength(kept);
+    expect(modelCalls()).toBe(afterSuccess);
+    if (previous === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previous;
+    store.close();
+  });
+
+  it("规则抽空时，假模型返回的价目要能对上原文才入库", async () => {
+    const previous = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_BASE_URL = "https://api.deepseek.com";
+    const sentence = "deepseek-chat 输入价格 $20 / 1M tokens。";
+    const body = `${sentence}\n${"正文 ".repeat(500)}`;
+    const { dataDir, deps, store } = setup({
+      "https://api-docs.deepseek.com/quick_start/pricing/": { status: 200, body, type: "text/html" },
+      "https://api.deepseek.com/chat/completions": {
+        status: 200,
+        type: "application/json",
+        body: JSON.stringify({ choices: [{ message: { content: JSON.stringify({ rows: [{ kind: "api", product: "deepseek-chat", tier: "标准", metric: "输入", condition: "", price: "$20", unit: "每百万 token", quota: "", reset: "", excerpt: sentence.trim() }] }) } }] }),
+      },
+    });
+    dirs.push(dataDir);
+    await runLedger(deps, store, ["P06"], () => undefined);
+    expect(store.prices()).toHaveLength(1);
+    expect(store.prices()[0]?.price).toBe("$20");
+    expect(store.sources().find((source) => source.id === "P06")?.run).toMatchObject({ status: "ok", llmKept: 1 });
+    if (previous === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previous;
+    store.close();
+  });
+
+  it("已有库加列后，原来的行还在", () => {
+    const dataDir = mkdtempSync(path.join(os.tmpdir(), "hc-migrate-"));
+    dirs.push(dataDir);
+    const file = path.join(dataDir, "headline.sqlite");
+    const db = new DatabaseSync(file);
+    db.exec(`
+      CREATE TABLE prices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, kind TEXT NOT NULL, product TEXT NOT NULL, tier TEXT NOT NULL,
+        metric TEXT NOT NULL, condition TEXT NOT NULL, price TEXT NOT NULL, amount REAL, currency TEXT NOT NULL, unit TEXT NOT NULL,
+        quota TEXT NOT NULL, reset_rule TEXT NOT NULL, fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL
+      );
+      INSERT INTO prices (source_id, kind, product, tier, metric, condition, price, amount, currency, unit, quota, reset_rule, fetched_at, excerpt)
+        VALUES ('P02', 'plan', 'Plus', '订阅', '订阅价', '', '$20', 20, 'USD', '每月', '', '', '2026-11-08T08:00:00+08:00', 'Plus $20');
+      PRAGMA user_version = 2;
+    `);
+    db.close();
+    const store = new LedgerStore(file);
+    expect(store.prices()).toHaveLength(1);
+    expect(store.prices()[0]).toMatchObject({ product: "Plus", price: "$20", brief: "" });
     store.close();
   });
 });

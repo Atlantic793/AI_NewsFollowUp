@@ -26,6 +26,7 @@ export function lmarenaRanks(json: string): RankDraft[] {
       score: typeof row.rating === "number" ? String(Math.round(row.rating)) : "",
       votes: typeof row.vote_count === "number" ? String(row.vote_count) : "",
       boardDate: row.leaderboard_publish_date ?? "",
+      basis: "printed",
       excerpt: JSON.stringify(row),
     }));
 }
@@ -57,6 +58,7 @@ export function swebenchVerified(html: string): RankDraft[] {
     score: `${result.resolved}%`,
     votes: "",
     boardDate,
+    basis: "sorted",
     excerpt: JSON.stringify({ name: result.name, resolved: result.resolved, date: result.date, tags: result.tags, checked: result.checked }),
   }));
 }
@@ -85,6 +87,7 @@ export function artificialAnalysisRanks(html: string): RankDraft[] {
     score: row[scoreAt] ?? "",
     votes: "",
     boardDate: "",
+    basis: "sorted",
     excerpt: excerptOf(head.join(" | "), row.join(" | ")),
   }));
 }

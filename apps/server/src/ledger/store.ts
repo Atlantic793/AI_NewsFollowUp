@@ -16,7 +16,7 @@ import {
   type SourceDef,
 } from "@followup/core";
 
-const SCHEMA = 2;
+const SCHEMA = 3;
 const SAMPLES_PER_REASON = 3;
 
 export type RunStatus = "ok" | "没抽出" | "skipped" | "failed";
@@ -36,6 +36,9 @@ export interface RunRecord {
   changed: number;
   rejected: number;
   reasons: Record<string, number>;
+  llmDrafts: number;
+  llmKept: number;
+  llmDropped: number;
 }
 
 export interface SourceView {
@@ -78,21 +81,14 @@ export class LedgerStore {
   constructor(file: string) {
     mkdirSync(path.dirname(file), { recursive: true });
     this.db = new DatabaseSync(file);
-    const version = Number((this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
-    if (version < SCHEMA) {
-      this.db.exec(`
-        DROP TABLE IF EXISTS sources; DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS raw_pages;
-        DROP TABLE IF EXISTS prices; DROP TABLE IF EXISTS ranks; DROP TABLE IF EXISTS hot;
-        DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS diffs; DROP TABLE IF EXISTS rejects;
-      `);
-    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, enabled INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, started_at TEXT NOT NULL, status TEXT NOT NULL,
         http_status INTEGER, error TEXT NOT NULL, bytes INTEGER NOT NULL, content_hash TEXT NOT NULL, raw_path TEXT NOT NULL,
         extracted INTEGER NOT NULL, cleaned INTEGER NOT NULL, stored INTEGER NOT NULL, changed INTEGER NOT NULL,
-        rejected INTEGER NOT NULL, reasons TEXT NOT NULL
+        rejected INTEGER NOT NULL, reasons TEXT NOT NULL,
+        llm_drafts INTEGER NOT NULL DEFAULT 0, llm_kept INTEGER NOT NULL DEFAULT 0, llm_dropped INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS rejects (
         id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, reason TEXT NOT NULL, excerpt TEXT NOT NULL
@@ -100,30 +96,46 @@ export class LedgerStore {
       CREATE TABLE IF NOT EXISTS prices (
         id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, kind TEXT NOT NULL, product TEXT NOT NULL, tier TEXT NOT NULL,
         metric TEXT NOT NULL, condition TEXT NOT NULL, price TEXT NOT NULL, amount REAL, currency TEXT NOT NULL, unit TEXT NOT NULL,
-        quota TEXT NOT NULL, reset_rule TEXT NOT NULL, fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL
+        quota TEXT NOT NULL, reset_rule TEXT NOT NULL, fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL, brief TEXT NOT NULL DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS ranks (
         id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, rank_no INTEGER NOT NULL, model TEXT NOT NULL, org TEXT NOT NULL,
-        score TEXT NOT NULL, score_value REAL NOT NULL, votes TEXT NOT NULL, board_date TEXT NOT NULL, fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL
+        score TEXT NOT NULL, score_value REAL NOT NULL, votes TEXT NOT NULL, board_date TEXT NOT NULL, basis TEXT NOT NULL DEFAULT 'printed', fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL, brief TEXT NOT NULL DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS hot (
         id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, rank_no INTEGER NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
-        heat TEXT NOT NULL, summary TEXT NOT NULL, fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL
+        heat TEXT NOT NULL, summary TEXT NOT NULL, fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL, brief TEXT NOT NULL DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, date TEXT NOT NULL,
-        detail TEXT NOT NULL, url TEXT NOT NULL, fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL
+        detail TEXT NOT NULL, url TEXT NOT NULL, fetched_at TEXT NOT NULL, excerpt TEXT NOT NULL, brief TEXT NOT NULL DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS diffs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, column_kind TEXT NOT NULL, row_key TEXT NOT NULL, label TEXT NOT NULL,
         field TEXT NOT NULL, old_value TEXT NOT NULL, new_value TEXT NOT NULL, fetched_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS row_archive (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, column_kind TEXT NOT NULL, archived_at TEXT NOT NULL, payload TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS watches (name TEXT PRIMARY KEY, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      PRAGMA user_version = ${SCHEMA};
     `);
+    this.ensureColumn("ranks", "basis", "TEXT NOT NULL DEFAULT 'printed'");
+    this.ensureColumn("prices", "brief", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("ranks", "brief", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("hot", "brief", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("events", "brief", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("runs", "llm_drafts", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("runs", "llm_kept", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("runs", "llm_dropped", "INTEGER NOT NULL DEFAULT 0");
+    this.db.exec(`PRAGMA user_version = ${SCHEMA}`);
     const insert = this.db.prepare("INSERT INTO sources (id, enabled) VALUES (?, ?) ON CONFLICT(id) DO NOTHING");
     for (const source of SOURCES) insert.run(source.id, source.enabled ? 1 : 0);
+  }
+
+  private ensureColumn(table: string, name: string, definition: string): void {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
   }
 
   sources(): SourceView[] {
@@ -148,9 +160,9 @@ export class LedgerStore {
 
   recordRun(run: RunRecord, rejected: readonly Rejected[]): void {
     this.db.prepare(`INSERT INTO runs (source_id, started_at, status, http_status, error, bytes, content_hash, raw_path,
-      extracted, cleaned, stored, changed, rejected, reasons) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      extracted, cleaned, stored, changed, rejected, reasons, llm_drafts, llm_kept, llm_dropped) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(run.sourceId, run.startedAt, run.status, run.httpStatus, run.error, run.bytes, run.hash, run.rawPath,
-        run.extracted, run.cleaned, run.stored, run.changed, run.rejected, JSON.stringify(run.reasons));
+        run.extracted, run.cleaned, run.stored, run.changed, run.rejected, JSON.stringify(run.reasons), run.llmDrafts, run.llmKept, run.llmDropped);
     this.db.prepare("DELETE FROM rejects WHERE source_id = ?").run(run.sourceId);
     const insert = this.db.prepare("INSERT INTO rejects (source_id, reason, excerpt) VALUES (?, ?, ?)");
     const kept = new Map<string, number>();
@@ -167,11 +179,19 @@ export class LedgerStore {
       .map((row) => ({ reason: text(row.reason), excerpt: text(row.excerpt) }));
   }
 
+  snapshot(source: SourceDef): CleanedSet {
+    return this.cleanedOf(source);
+  }
+
   /** 把这个来源的旧行换成这一轮清洗后的行，返回记下的变化条数。第一次入库只当基线，不记变化。 */
   replace(source: SourceDef, set: CleanedSet, fetchedAt: string): number {
     const before = this.cleanedOf(source);
     const removals = set.column === "price" || set.column === "rank";
     const diffs = before.rows.length === 0 ? [] : diffRows(comparable(before), comparable(set), removals);
+    if (before.rows.length > 0) {
+      this.db.prepare("INSERT INTO row_archive (source_id, column_kind, archived_at, payload) VALUES (?, ?, ?, ?)")
+        .run(source.id, source.column, fetchedAt, JSON.stringify(before.rows));
+    }
     this.db.exec("BEGIN");
     try {
       this.clear(source);
@@ -191,28 +211,48 @@ export class LedgerStore {
     this.db.prepare(`DELETE FROM ${tableFor(source.column)} WHERE source_id = ?`).run(source.id);
   }
 
+  /** 这个来源当前还留着多少行。解析失败时用来判断要不要告诉用户「上次的还在」。 */
+  count(source: SourceDef): number {
+    const row = this.db.prepare(`SELECT COUNT(*) AS n FROM ${tableFor(source.column)} WHERE source_id = ?`).get(source.id) as { n: number };
+    return Number(row.n);
+  }
+
+  archived(sourceId: string): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM row_archive WHERE source_id = ?").get(sourceId) as { n: number };
+    return Number(row.n);
+  }
+
+  /** 这一栏成功跑过的最多次数。只有 1 次时，差分还是基线。 */
+  okRuns(column: ColumnKind): number {
+    const ids = SOURCES.filter((source) => source.column === column).map((source) => source.id);
+    if (ids.length === 0) return 0;
+    const marks = ids.map(() => "?").join(", ");
+    const row = this.db.prepare(`SELECT MAX(n) AS n FROM (SELECT COUNT(*) AS n FROM runs WHERE status = 'ok' AND source_id IN (${marks}) GROUP BY source_id)`).get(...ids) as { n: number | null };
+    return Number(row.n ?? 0);
+  }
+
   private insertRows(sourceId: string, set: CleanedSet, fetchedAt: string): void {
     switch (set.column) {
       case "price": {
-        const insert = this.db.prepare(`INSERT INTO prices (source_id, kind, product, tier, metric, condition, price, amount, currency, unit, quota, reset_rule, fetched_at, excerpt)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-        for (const row of set.rows) insert.run(sourceId, row.kind, row.product, row.tier, row.metric, row.condition, row.price, row.amount, row.currency, row.unit, row.quota, row.reset, fetchedAt, row.excerpt);
+        const insert = this.db.prepare(`INSERT INTO prices (source_id, kind, product, tier, metric, condition, price, amount, currency, unit, quota, reset_rule, fetched_at, excerpt, brief)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        for (const row of set.rows) insert.run(sourceId, row.kind, row.product, row.tier, row.metric, row.condition, row.price, row.amount, row.currency, row.unit, row.quota, row.reset, fetchedAt, row.excerpt, row.brief);
         return;
       }
       case "rank": {
-        const insert = this.db.prepare(`INSERT INTO ranks (source_id, rank_no, model, org, score, score_value, votes, board_date, fetched_at, excerpt)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-        for (const row of set.rows) insert.run(sourceId, row.rank, row.model, row.org, row.score, row.scoreValue, row.votes, row.boardDate, fetchedAt, row.excerpt);
+        const insert = this.db.prepare(`INSERT INTO ranks (source_id, rank_no, model, org, score, score_value, votes, board_date, basis, fetched_at, excerpt, brief)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        for (const row of set.rows) insert.run(sourceId, row.rank, row.model, row.org, row.score, row.scoreValue, row.votes, row.boardDate, row.basis, fetchedAt, row.excerpt, row.brief);
         return;
       }
       case "hot": {
-        const insert = this.db.prepare("INSERT INTO hot (source_id, rank_no, title, url, heat, summary, fetched_at, excerpt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-        for (const row of set.rows) insert.run(sourceId, row.rank, row.title, row.url, row.heat, row.summary, fetchedAt, row.excerpt);
+        const insert = this.db.prepare("INSERT INTO hot (source_id, rank_no, title, url, heat, summary, fetched_at, excerpt, brief) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        for (const row of set.rows) insert.run(sourceId, row.rank, row.title, row.url, row.heat, row.summary, fetchedAt, row.excerpt, row.brief);
         return;
       }
       case "event": {
-        const insert = this.db.prepare("INSERT INTO events (source_id, type, title, date, detail, url, fetched_at, excerpt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-        for (const row of set.rows) insert.run(sourceId, row.type, row.title, row.date, row.detail, row.url, fetchedAt, row.excerpt);
+        const insert = this.db.prepare("INSERT INTO events (source_id, type, title, date, detail, url, fetched_at, excerpt, brief) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        for (const row of set.rows) insert.run(sourceId, row.type, row.title, row.date, row.detail, row.url, fetchedAt, row.excerpt, row.brief);
         return;
       }
       default: {
@@ -260,6 +300,7 @@ export class LedgerStore {
         reset: text(row.reset_rule),
         fetchedAt: text(row.fetched_at),
         excerpt: text(row.excerpt),
+        brief: text(row.brief),
       };
     });
   }
@@ -279,8 +320,10 @@ export class LedgerStore {
         scoreValue: Number(row.score_value),
         votes: text(row.votes),
         boardDate: text(row.board_date),
+        basis: text(row.basis) === "sorted" ? "sorted" : "printed",
         fetchedAt: text(row.fetched_at),
         excerpt: text(row.excerpt),
+        brief: text(row.brief),
       };
     });
   }
@@ -297,6 +340,7 @@ export class LedgerStore {
       summary: text(row.summary),
       fetchedAt: text(row.fetched_at),
       excerpt: text(row.excerpt),
+      brief: text(row.brief),
     }));
   }
 
@@ -313,6 +357,7 @@ export class LedgerStore {
       url: text(row.url),
       fetchedAt: text(row.fetched_at),
       excerpt: text(row.excerpt),
+      brief: text(row.brief),
     }));
   }
 
@@ -392,6 +437,9 @@ function mapRun(row: Raw): RunRecord {
     changed: Number(row.changed),
     rejected: Number(row.rejected),
     reasons,
+    llmDrafts: Number(row.llm_drafts ?? 0),
+    llmKept: Number(row.llm_kept ?? 0),
+    llmDropped: Number(row.llm_dropped ?? 0),
   };
 }
 

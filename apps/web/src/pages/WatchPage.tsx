@@ -57,14 +57,14 @@ export function WatchPage() {
               </div>
             ))}
             <form className="archive-add" onSubmit={(event) => { event.preventDefault(); void add(); }}>
-              <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="模型或套餐名，例如 deepseek-flash" aria-label="模型或套餐名" />
+              <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="完整模型名，例如 deepseek-flash" aria-label="模型或套餐名" />
               <button type="submit">添加</button>
             </form>
           </div>
         </aside>
         <main className="desk-main">
           <div className="feed">
-            {hits.length === 0 ? <div className="feed-empty"><p>名单是空的。加一个模型或套餐的名字，这里会列出它在各栏里的行和今天的变化。</p></div> : null}
+            {hits.length === 0 ? <div className="feed-empty"><p>名单是空的。写完整的模型名或套餐名，例如 deepseek-flash。pro、opus 这种短词不会匹配。</p></div> : null}
             {hits.map((hit) => (
               <article className="story" key={hit.name}>
                 <strong>{hit.name}</strong>

@@ -15,6 +15,9 @@ export interface RunRecord {
   changed: number;
   rejected: number;
   reasons: Record<string, number>;
+  llmDrafts: number;
+  llmKept: number;
+  llmDropped: number;
 }
 
 export interface SourceView {
@@ -27,11 +30,16 @@ export interface SourceView {
   enabled: boolean;
   needs: string;
   run: RunRecord | null;
+  stale?: boolean;
+  staleReason?: string;
+  rowsFetchedAt?: string;
+  fallbackId?: string;
+  fallbackNote?: string;
 }
 
 export interface RunState { state: "idle" | "running"; done: number; total: number; current: string; error: string }
 
-interface RowBase { id: number; sourceId: string; fetchedAt: string; excerpt: string }
+interface RowBase { id: number; sourceId: string; fetchedAt: string; excerpt: string; brief: string }
 
 export interface PriceView extends RowBase {
   vendor: string;
@@ -47,6 +55,7 @@ export interface PriceView extends RowBase {
   unit: string;
   quota: string;
   reset: string;
+  officialPrice?: string;
 }
 
 export interface RankView extends RowBase {
@@ -58,6 +67,7 @@ export interface RankView extends RowBase {
   score: string;
   votes: string;
   boardDate: string;
+  basis: "printed" | "sorted";
 }
 
 export interface HotView extends RowBase {
@@ -111,6 +121,11 @@ export function eventTypeName(type: EventType): string {
       return unreachable;
     }
   }
+}
+
+export function runNote(status: string, error: string): string {
+  if (status === "ok" && error.includes("只送了开头和结尾")) return "规则已读完整页。正文超过 24000 字，送给模型时只带了开头和结尾";
+  return error;
 }
 
 export function statusName(run: RunRecord | null, enabled: boolean): string {

@@ -9,10 +9,14 @@ import {
   compareEvent,
   diffRows,
   extract,
+  groundBrief,
   mentionsMainland,
   parseMoney,
   pathAllowed,
+  ruleBrief,
+  shanghaiDate,
   sourceById,
+  watchHits,
   type EventDraft,
   type HotDraft,
   type PriceDraft,
@@ -69,13 +73,14 @@ describe("排名、热榜、动态的清洗", () => {
   it("热榜：导航、没链接、别的网站的链接都不进表", () => {
     const { rows, rejected } = cleanHot([
       hot({ title: "Sign in", url: "https://github.com/login" }),
-      hot({ title: "a/b" }),
+      hot({ title: "a/b", summary: "an agent for models" }),
+      hot({ title: "tailwindlabs/tailwindcss", summary: "A utility-first CSS framework", url: "https://github.com/tailwindlabs/tailwindcss" }),
       hot({ title: "c/d", url: "" }),
       hot({ title: "e/f", url: "https://example.com/e/f" }),
       hot({ title: "Explore GitHub", url: "https://github.com/explore" }),
     ], "https://github.com/trending");
     expect(rows.map((row) => row.title)).toEqual(["a/b"]);
-    expect(rejected.map((item) => item.reason)).toEqual(["导航或按钮文字", "没有自己的链接", "链接不在榜单网站上", "不是 owner/name 形式的条目"]);
+    expect(rejected.map((item) => item.reason)).toEqual(["导航或按钮文字", "和模型、智能体无关", "没有自己的链接", "链接不在榜单网站上", "不是 owner/name 形式的条目"]);
   });
 
   it("动态：没有日期的发布丢掉，状态行用当天日期", () => {
@@ -106,6 +111,38 @@ describe("排名、热榜、动态的清洗", () => {
   });
 });
 
+describe("今天按北京时间", () => {
+  it("UTC 晚上算成北京时间的下一天", () => {
+    expect(shanghaiDate(new Date("2026-11-08T18:00:00Z"))).toBe("2026-11-09");
+    expect(shanghaiDate(new Date("2026-11-08T08:00:00Z"))).toBe("2026-11-08");
+  });
+});
+
+describe("定制追踪按整段匹配", () => {
+  it("完整模型名命中，短词和包含关系不命中", () => {
+    expect(watchHits("deepseek-flash", "deepseek-flash")).toBe(true);
+    expect(watchHits("deepseek-flash", "DeepSeek-Flash · 低谷时段")).toBe(true);
+    expect(watchHits("Claude Code", "Claude Code 2.1.319")).toBe(true);
+    expect(watchHits("opus", "Claude Opus 4.5")).toBe(false);
+    expect(watchHits("pro", "Pro 高级套餐")).toBe(false);
+    expect(watchHits("4", "gpt-4")).toBe(false);
+    expect(watchHits("flash", "deepseek-flash")).toBe(false);
+  });
+});
+
+describe("搜索概括不发明数字", () => {
+  it("规则概括只复述原文", () => {
+    expect(ruleBrief("flash", [])).toContain("没有和");
+    expect(ruleBrief("flash", [{ sourceId: "P06", title: "deepseek-flash", excerpt: "输入 $0.14" }])).toContain("$0.14");
+  });
+
+  it("原文里没有的价格句子丢掉", () => {
+    const text = groundBrief("Plus 是 $20。另一个是 $99。", "price=\"$20\"");
+    expect(text).toContain("$20");
+    expect(text).not.toContain("$99");
+  });
+});
+
 describe("robots.txt", () => {
   const robots = [
     "User-agent: *",
@@ -133,7 +170,7 @@ describe("robots.txt", () => {
 
 describe("和上一轮比", () => {
   const row = (priceText: string, product = "gpt-x"): PriceRow => ({
-    kind: "api", product, tier: "标准", metric: "输入", condition: "", price: priceText, amount: 1, currency: "USD", unit: "每百万 token", quota: "", reset: "", excerpt: "",
+    kind: "api", product, tier: "标准", metric: "输入", condition: "", price: priceText, amount: 1, currency: "USD", unit: "每百万 token", quota: "", reset: "", excerpt: "", brief: "",
   });
 
   it("价目记改价、新增和掉出", () => {
@@ -146,8 +183,8 @@ describe("和上一轮比", () => {
   });
 
   it("动态只记新出现的和状态变化，旧条目滚出最近 20 条不算变化", () => {
-    const before = [{ type: "status" as const, title: "API", date: "2026-11-07", detail: "正常", url: "", excerpt: "" }, { type: "release" as const, title: "old", date: "2026-10-01", detail: "", url: "", excerpt: "" }];
-    const after = [{ ...before[0]!, detail: "部分中断" }, { type: "release" as const, title: "new", date: "2026-11-08", detail: "", url: "", excerpt: "" }];
+    const before = [{ type: "status" as const, title: "API", date: "2026-11-07", detail: "正常", url: "", excerpt: "", brief: "" }, { type: "release" as const, title: "old", date: "2026-10-01", detail: "", url: "", excerpt: "", brief: "" }];
+    const after = [{ ...before[0]!, detail: "部分中断" }, { type: "release" as const, title: "new", date: "2026-11-08", detail: "", url: "", excerpt: "", brief: "" }];
     const diffs = diffRows(before.map(compareEvent), after.map(compareEvent), false);
     expect(diffs.map((diff) => [diff.label, diff.field, diff.newValue])).toEqual([["API", "状态", "部分中断"], ["new", "row", "新增"]]);
   });

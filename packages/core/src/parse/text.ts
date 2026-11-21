@@ -137,6 +137,27 @@ function pad(value: number): string {
 }
 
 /** 把页面上的日期写法统一成 YYYY-MM-DD；只有年月时给 YYYY-MM；认不出就返回空串。 */
+/** 北京时间的日历日，YYYY-MM-DD。差分和「今天」都用这一天。 */
+export function shanghaiDate(date: Date): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+}
+
+/** 北京时间的时间戳，前 10 位就是 shanghaiDate。 */
+export function shanghaiStamp(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const read = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "00";
+  return `${read("year")}-${read("month")}-${read("day")}T${read("hour")}:${read("minute")}:${read("second")}+08:00`;
+}
+
 export function isoDate(value: string, year?: number): string {
   const text = value.trim();
   let found = text.match(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})/);

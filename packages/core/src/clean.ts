@@ -15,7 +15,7 @@ import type {
 } from "./rows.js";
 import type { SourceDef } from "./sources.js";
 
-export const KEEP = { rank: 50, hot: 25, event: 20 } as const;
+export const KEEP = { rank: 100, hot: 25, event: 40 } as const;
 
 const NAV = /^(skip to (main )?content|sign in|sign up|log ?in|products?|pricing|plans?|documentation|docs|search|home|plugins|copy page|getting started|about|blog|news|contact( sales| us)?|try claude|learn more|get started|explore|menu|next|previous|下一页|上一页|登录|注册|首页|文档|产品|定价|搜索|联系我们|联系销售|立即购买|免费试用)$/i;
 
@@ -182,6 +182,7 @@ export function cleanPrices(drafts: readonly PriceDraft[]): Cleaned<PriceRow> {
       quota,
       reset: tidy(draft.reset),
       excerpt: draft.excerpt,
+      brief: "",
     };
     sink.add(priceKey(row), `${row.price}|${row.unit}|${row.quota}|${row.reset}`, row, draft.excerpt);
   }
@@ -212,7 +213,18 @@ export function cleanRanks(drafts: readonly RankDraft[], keep: number = KEEP.ran
       sink.reject("分数不是数字", draft.excerpt);
       continue;
     }
-    const row: RankRow = { rank, model, org: tidy(draft.org), score: tidy(draft.score), scoreValue, votes: tidy(draft.votes), boardDate: isoDate(draft.boardDate), excerpt: draft.excerpt };
+    const row: RankRow = {
+      rank,
+      model,
+      org: tidy(draft.org),
+      score: tidy(draft.score),
+      scoreValue,
+      votes: tidy(draft.votes),
+      boardDate: isoDate(draft.boardDate),
+      basis: draft.basis === "sorted" ? "sorted" : "printed",
+      excerpt: draft.excerpt,
+      brief: "",
+    };
     sink.add(rankKey(row), "", row, draft.excerpt, "同一模型重复上榜，留名次靠前的");
   }
   const result = sink.done();
@@ -224,6 +236,11 @@ export function cleanRanks(drafts: readonly RankDraft[], keep: number = KEEP.ran
 // ---------- 热榜 ----------
 
 const SLUG_HOSTS = new Set(["github.com", "huggingface.co"]);
+
+/** GitHub 全站趋势里，只留下标题或简介写到模型、智能体的仓库。 */
+export function relatedToModels(text: string): boolean {
+  return /\b(llm|gpt|claude|gemini|qwen|kimi|deepseek|openai|anthropic|transformer|diffusion|agent|agents|model|models|machine[- ]learning|huggingface|skills?)\b|模型|智能体|大模型/i.test(text);
+}
 
 function hostOf(url: string): string {
   try {
@@ -258,7 +275,11 @@ export function cleanHot(drafts: readonly HotDraft[], page: string, keep: number
       sink.reject("不是 owner/name 形式的条目", draft.excerpt);
       continue;
     }
-    const row: HotRow = { rank: sink.rows.length + 1, title, url: draft.url, heat: tidy(draft.heat), summary: tidy(draft.summary), excerpt: draft.excerpt };
+    if (host === "github.com" && !relatedToModels(`${title} ${draft.summary}`)) {
+      sink.reject("和模型、智能体无关", draft.excerpt);
+      continue;
+    }
+    const row: HotRow = { rank: sink.rows.length + 1, title, url: draft.url, heat: tidy(draft.heat), summary: tidy(draft.summary), excerpt: draft.excerpt, brief: "" };
     sink.add(hotKey(row), row.title, row, draft.excerpt);
   }
   const result = sink.done();
@@ -321,7 +342,7 @@ export function cleanEvents(drafts: readonly EventDraft[], today: string, keep: 
       continue;
     }
     const type = draft.type !== "status" && mentionsMainland(`${title} ${detail}`) ? "cn_access" : draft.type;
-    const row: EventRow = { type, title, date, detail, url: /^https?:\/\//.test(draft.url) ? draft.url : "", excerpt: draft.excerpt };
+    const row: EventRow = { type, title, date, detail, url: /^https?:\/\//.test(draft.url) ? draft.url : "", excerpt: draft.excerpt, brief: "" };
     sink.add(eventKey(row), row.detail, row, draft.excerpt);
   }
   const result = sink.done();

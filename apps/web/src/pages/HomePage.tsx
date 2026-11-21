@@ -9,10 +9,12 @@ interface HomeBody {
   hot: HotView[];
   prices: PriceView[];
   priceRows: number;
+  usdToCny: number;
   ranks: RankView[];
   events: EventView[];
   outages: number;
   changes: Record<Kind, number>;
+  baselines: Record<Kind, boolean>;
 }
 
 const HOT_IDS = { github: "H01", huggingface: "H02", kaggle: "H03" } as const;
@@ -56,7 +58,7 @@ export function HomePage() {
       {error ? <p className="shot-error">{error}</p> : null}
       <div className="shot-grid">
         <Link className="shot-card" to="/columns/hot">
-          <div className="shot-card-head"><h2>热榜</h2><Changes count={data?.changes.hot ?? 0} /></div>
+          <div className="shot-card-head"><h2>热榜</h2><Changes count={data?.changes.hot ?? 0} baseline={data?.baselines.hot ?? false} /></div>
           <div className="shot-pills">
             <Pill on={data?.hotEnabled.github ?? true} label="GitHub" onClick={(event) => { event.preventDefault(); void toggleHot("github"); }} />
             <Pill on={data?.hotEnabled.huggingface ?? true} label="Hugging Face" onClick={(event) => { event.preventDefault(); void toggleHot("huggingface"); }} />
@@ -68,7 +70,7 @@ export function HomePage() {
           </ul>
         </Link>
         <Link className="shot-card" to="/columns/price">
-          <div className="shot-card-head"><h2>价目</h2><Changes count={data?.changes.price ?? 0} /></div>
+          <div className="shot-card-head"><h2>价目</h2><Changes count={data?.changes.price ?? 0} baseline={data?.baselines.price ?? false} /></div>
           <table>
             <thead><tr><th>厂商</th><th>产品</th><th>输入价</th></tr></thead>
             <tbody>
@@ -82,10 +84,10 @@ export function HomePage() {
             </tbody>
           </table>
           {data && data.prices.length === 0 ? <p className="shot-empty">还没有价目。去采集跑一轮。</p> : null}
-          {data && data.priceRows > 0 ? <p className="shot-foot">全表 {data.priceRows} 行，每格一行</p> : null}
+          {data && data.priceRows > 0 ? <p className="shot-foot">全表 {data.priceRows} 行，每格一行。美元按 1 美元 = {data.usdToCny} 元换算</p> : null}
         </Link>
         <Link className="shot-card" to="/columns/rank">
-          <div className="shot-card-head"><h2>排名</h2><Changes count={data?.changes.rank ?? 0} /></div>
+          <div className="shot-card-head"><h2>排名</h2><Changes count={data?.changes.rank ?? 0} baseline={data?.baselines.rank ?? false} /></div>
           <div className="shot-boards">
             {BOARDS.map((board) => {
               const top = data?.ranks.find((row) => row.sourceId === board.id);
@@ -93,7 +95,7 @@ export function HomePage() {
                 <div key={board.id}>
                   <small>{board.label}</small>
                   <strong>{top ? top.model : "—"}</strong>
-                  <em>{top ? `第 ${top.rank} 名 · ${top.score}` : "未抓到"}</em>
+                  <em>{top ? `${top.basis === "sorted" ? "按分数排序" : `第 ${top.rank} 名`} · ${top.score}${top.boardDate ? "" : " · 页面未印日期"}` : "未抓到"}</em>
                 </div>
               );
             })}
@@ -102,7 +104,7 @@ export function HomePage() {
         <Link className="shot-card" to="/columns/event">
           <div className="shot-card-head">
             <h2>厂商动态</h2>
-            {data && data.outages > 0 ? <b className="bad">{data.outages} 个组件异常</b> : <Changes count={data?.changes.event ?? 0} />}
+            {data && data.outages > 0 ? <b className="bad">{data.outages} 个组件异常</b> : <Changes count={data?.changes.event ?? 0} baseline={data?.baselines.event ?? false} />}
           </div>
           <ul>
             {(data?.events ?? []).map((item) => (
@@ -119,8 +121,10 @@ export function HomePage() {
   );
 }
 
-function Changes(props: { count: number }) {
-  return props.count > 0 ? <b>{props.count} 处变化</b> : null;
+function Changes(props: { count: number; baseline: boolean }) {
+  if (props.count > 0) return <b>{props.count} 处变化</b>;
+  if (props.baseline) return <b>基线</b>;
+  return null;
 }
 
 function Pill(props: { on: boolean; label: string; onClick: (event: MouseEvent<HTMLButtonElement>) => void }) {

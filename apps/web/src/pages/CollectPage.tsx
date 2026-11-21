@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { request } from "../api";
 import { startRun } from "../run";
-import { COLUMN_TITLES, clock, statusName, type Kind, type RunState, type SourceView } from "../types";
+import { COLUMN_TITLES, clock, runNote, statusName, type Kind, type RunState, type SourceView } from "../types";
 
 interface Reject { reason: string; excerpt: string }
 
@@ -20,6 +20,9 @@ const NOT_COLLECTED = [
   "status.claude.com/api/：robots.txt 不允许，改读状态页 HTML。",
   "Kimi Code 会员套餐：官网没有静态价目页；GLM Coding Plan 文档里没有标价，只记额度。",
   "Kaggle 竞赛：官方 API 要凭据，没配就跳过。OpenRouter 等第三方聚合站不抓。",
+  "阿里云没有单独的官方动态页；DeepSeek、月之暗面、智谱的文档里没有新闻稿和状态页，就不另编一页。",
+  "Google、DeepSeek、月之暗面没有写明额度和重置的官方套餐页。GLM Coding Plan 只有额度，价格显示为未标价。",
+  "GitHub 仍读 Trending，清洗时丢掉和模型、智能体无关的仓库。",
 ];
 
 function bytes(value: number): string {
@@ -146,8 +149,9 @@ export function CollectPage() {
                   <li><b>抽取</b><span>{current.run ? `按这一页的解析规则抽出 ${current.run.extracted} 条` : "—"}</span></li>
                   <li><b>清洗</b><span>{current.run ? `留下 ${current.run.cleaned} 条，丢掉 ${current.run.rejected} 条` : "—"}</span></li>
                   <li><b>入库</b><span>{current.run ? `${current.run.stored} 行，和上一轮比 ${current.run.changed} 处变化` : "—"}</span></li>
+                  <li><b>模型</b><span>{current.run ? `候选 ${current.run.llmDrafts}，留下 ${current.run.llmKept}，核对丢掉 ${current.run.llmDropped}` : "—"}</span></li>
                 </ol>
-                {current.run?.error ? <p className="collect-why">{statusName(current.run, current.enabled)}：{current.run.error}</p> : null}
+                {current.run?.error ? <p className="collect-why">{statusName(current.run, current.enabled)}：{runNote(current.run.status, current.run.error)}</p> : null}
                 {current.run && Object.keys(current.run.reasons).length > 0 ? (
                   <div className="reasons">
                     <h3>丢弃原因</h3>

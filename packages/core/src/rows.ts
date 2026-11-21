@@ -19,6 +19,8 @@ export interface RankDraft {
   score: string;
   votes: string;
   boardDate: string;
+  /** printed：榜上印了名次。sorted：页面没有名次，按分数从高到低排。 */
+  basis?: "printed" | "sorted";
   excerpt: string;
 }
 
@@ -54,6 +56,7 @@ export interface PriceRow {
   quota: string;
   reset: string;
   excerpt: string;
+  brief: string;
 }
 
 export interface RankRow {
@@ -64,7 +67,9 @@ export interface RankRow {
   scoreValue: number;
   votes: string;
   boardDate: string;
+  basis: "printed" | "sorted";
   excerpt: string;
+  brief: string;
 }
 
 export interface HotRow {
@@ -74,6 +79,7 @@ export interface HotRow {
   heat: string;
   summary: string;
   excerpt: string;
+  brief: string;
 }
 
 export type EventType = EventDraft["type"] | "cn_access";
@@ -85,6 +91,7 @@ export interface EventRow {
   detail: string;
   url: string;
   excerpt: string;
+  brief: string;
 }
 
 export interface Rejected {

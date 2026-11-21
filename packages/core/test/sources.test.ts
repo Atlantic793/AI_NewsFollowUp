@@ -122,9 +122,10 @@ describe("价目：每个价格格子一行", () => {
 });
 
 describe("厂商动态：一条是一次发布或一条状态", () => {
-  it("OpenAI 更新日志按日期倒序、只留最近 20 条", () => {
+  it("OpenAI 更新日志按日期倒序，夹具里超过 20 条的都留下", () => {
     const rows = events("N01", "N01-openai-changelog.md");
-    expect(rows).toHaveLength(20);
+    expect(rows.length).toBeGreaterThan(20);
+    expect(rows.length).toBeLessThanOrEqual(40);
     expect(rows[0]?.date).toBe("2026-11-05");
     expect(rows.every((row) => row.type === "release" && /^\d{4}-\d{2}-\d{2}$/.test(row.date))).toBe(true);
   });
@@ -190,14 +191,14 @@ describe("排名：名次、榜上的模型名、分数、榜单日期", () => {
 
   it("SWE-bench Verified", () => {
     const rows = ranks("R02", "R02-swebench.html");
-    expect(rows[0]).toMatchObject({ rank: 1, score: "79.2%", org: "Sonar" });
+    expect(rows[0]).toMatchObject({ rank: 1, score: "79.2%", org: "Sonar", basis: "sorted" });
     expect(new Set(rows.map((row) => row.model)).size).toBe(rows.length);
   });
 
   it("Artificial Analysis Intelligence Index", () => {
     const rows = ranks("R03", "R03-artificial-analysis.html");
     expect(rows).toHaveLength(12);
-    expect(rows[0]).toMatchObject({ rank: 1, model: "Gemini 4 Carbon (high)", org: "Google", score: "60" });
+    expect(rows[0]).toMatchObject({ rank: 1, model: "Gemini 4 Carbon (high)", org: "Google", score: "60", basis: "sorted", boardDate: "" });
   });
 });
 
@@ -207,12 +208,15 @@ describe("热榜：只要榜上的条目，每条有自己的链接", () => {
     const rows = hot("H01", "H01-github-trending.html");
     expect(rows).toHaveLength(6);
     expect(rows.every((row) => /^[\w.-]+\/[\w.-]+$/.test(row.title) && row.url === `https://github.com/${row.title}`)).toBe(true);
-    expect(rows[0]).toMatchObject({ rank: 1, title: "vercel-labs/agent-browser", heat: "190 stars today" });
+    expect(rows[0]).toMatchObject({ rank: 1, title: "vercel-labs/agent-browser", heat: "190 stars today", summary: "Browser automation CLI for AI agents" });
+    expect(rows[0]?.summary).not.toContain("Rust");
   });
 
-  it("Hugging Face 模型趋势", () => {
+  it("Hugging Face 模型趋势用任务和能力标签，不把点赞当简介", () => {
     const rows = hot("H02", "H02-hf-trending.json");
     expect(rows).toHaveLength(25);
     expect(rows[0]).toMatchObject({ title: "speridlabs/idol", url: "https://huggingface.co/speridlabs/idol" });
+    expect(rows[0]?.summary).toContain("image-to-3d");
+    expect(rows[0]?.summary).not.toMatch(/likes|downloads/);
   });
 });

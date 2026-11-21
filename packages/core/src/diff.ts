@@ -72,8 +72,22 @@ export function diffRows(previous: readonly ComparedRow[], next: readonly Compar
   return diffs;
 }
 
+const WATCH_GENERIC = new Set(["pro", "plus", "free", "max", "mini", "chat", "code", "plan", "opus", "go", "ultra", "team"]);
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 整段匹配：名字等于产品名或模型名，或是「 · 」分开的一整段，
+ * 或是不少于 6 个字符、停在词边界上的开头。pro、opus、4 这种短词不算。
+ */
 export function watchHits(name: string, haystack: string): boolean {
   const needle = name.trim().toLocaleLowerCase();
-  if (!needle) return false;
-  return haystack.toLocaleLowerCase().includes(needle);
+  if (needle.length < 3 || WATCH_GENERIC.has(needle)) return false;
+  const field = haystack.trim().toLocaleLowerCase();
+  if (!field) return false;
+  if (field === needle || field.split(/\s*·\s*/).some((segment) => segment === needle)) return true;
+  if (needle.length < 6) return false;
+  return new RegExp(`^${escapeRegExp(needle)}([^\\p{L}\\p{N}]|$)`, "u").test(field);
 }

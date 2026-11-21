@@ -107,7 +107,7 @@ export function statuspageJson(json: string, page: string): EventDraft[] {
       type: "status",
       title: [group, component.name ?? ""].filter(Boolean).join(" · "),
       date: component.updated_at ?? "",
-      detail: component.status ?? "",
+      detail: [component.status ?? "", component.updated_at ? `updated ${component.updated_at}` : ""].filter(Boolean).join(" · "),
       url: component.id ? `${page}#${component.id}` : page,
       excerpt: JSON.stringify({ id: component.id, position: component.position, group: group || undefined, name: component.name, status: component.status, updated_at: component.updated_at }),
     });

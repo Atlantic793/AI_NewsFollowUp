@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { SOURCES, clean, extract, pathAllowed, type CleanedSet, type Extracted, type Rejected, type SourceDef } from "@followup/core";
+import { SOURCES, clean, displayMoneyText, extract, hubBlurb, isLoginWall, pathAllowed, shanghaiDate, shanghaiStamp, type CleanedSet, type ColumnKind, type Extracted, type HotDraft, type Rejected, type SourceDef } from "@followup/core";
 import type { AppDeps } from "../types.js";
+import { assist } from "./assist.js";
 import type { LedgerStore, RunRecord } from "./store.js";
 
 const GAP_MS = 2_000;
@@ -25,6 +26,7 @@ export async function runLedger(deps: AppDeps, store: LedgerStore, ids: readonly
     const record = await capture(deps, store, source, lastHit, robotsCache);
     store.recordRun(record.run, record.rejected);
   }
+  await writeDigests(deps, store, sources).catch(() => undefined);
   onStep({ done: sources.length, total: sources.length, current: "" });
 }
 
@@ -34,10 +36,12 @@ interface Captured {
 }
 
 async function capture(deps: AppDeps, store: LedgerStore, source: SourceDef, lastHit: Map<string, number>, robotsCache: Map<string, RobotsResult>): Promise<Captured> {
-  const startedAt = deps.now().toISOString();
+  const startedAt = shanghaiStamp(deps.now());
+  const day = shanghaiDate(deps.now());
   const run: RunRecord = {
     sourceId: source.id, startedAt, status: "failed", httpStatus: null, error: "", bytes: 0, hash: "", rawPath: "",
     extracted: 0, cleaned: 0, stored: 0, changed: 0, rejected: 0, reasons: {},
+    llmDrafts: 0, llmKept: 0, llmDropped: 0,
   };
   const finish = (status: RunRecord["status"], error: string): Captured => ({ run: { ...run, status, error }, rejected: [] });
 
@@ -55,30 +59,45 @@ async function capture(deps: AppDeps, store: LedgerStore, source: SourceDef, las
 
   run.bytes = Buffer.byteLength(page.body, "utf8");
   run.hash = createHash("sha256").update(page.body).digest("hex");
-  run.rawPath = await saveRaw(deps.dataDir, startedAt.slice(0, 10), source.id, page.contentType, page.body);
+  run.rawPath = await saveRaw(deps.dataDir, day, source.id, page.contentType, page.body);
+  if (isLoginWall(page.body)) return { run: { ...run, status: "没抽出", error: keptLine(store, source, "页面像登录墙，没有正文，不交给模型") }, rejected: [] };
 
   let extracted: Extracted;
   try {
     extracted = extract(source, page.body);
   } catch (error) {
-    store.clear(source);
-    return finish("没抽出", `解析失败：${error instanceof Error ? error.message : String(error)}`);
+    return finish("没抽出", keptLine(store, source, `解析失败：${error instanceof Error ? error.message : String(error)}`));
   }
   run.extracted = extracted.drafts.length;
+  if (source.parser === "hf_trending" && extracted.column === "hot") {
+    extracted = { column: "hot", drafts: await attachHubCards(deps, extracted.drafts, target.host, robots, lastHit) };
+  }
 
-  const cleaned: CleanedSet = clean(source, extracted, startedAt.slice(0, 10));
+  const cleaned: CleanedSet = clean(source, extracted, day);
   run.cleaned = cleaned.rows.length;
   run.rejected = cleaned.rejected.length;
   for (const item of cleaned.rejected) run.reasons[item.reason] = (run.reasons[item.reason] ?? 0) + 1;
 
-  if (cleaned.rows.length === 0) {
-    store.clear(source);
-    const why = extracted.drafts.length === 0 ? "页面里没有找到这一栏要的表或条目" : `抽到 ${extracted.drafts.length} 条，全部没通过清洗`;
-    return { run: { ...run, status: "没抽出", error: why }, rejected: cleaned.rejected };
+  const previous = store.snapshot(source);
+  let set: CleanedSet = cleaned;
+  try {
+    const assisted = await assist(deps, source, page.body, cleaned, previous);
+    set = assisted.set;
+    run.llmDrafts = assisted.drafts;
+    run.llmKept = assisted.kept;
+    run.llmDropped = assisted.dropped;
+    if (assisted.note) run.error = assisted.note;
+  } catch {
+    set = cleaned;
   }
-  run.changed = store.replace(source, cleaned, startedAt);
-  run.stored = cleaned.rows.length;
-  return { run: { ...run, status: "ok" }, rejected: cleaned.rejected };
+
+  if (set.rows.length === 0) {
+    const why = run.error || (extracted.drafts.length === 0 ? "页面里没有找到这一栏要的表或条目" : `抽到 ${extracted.drafts.length} 条，全部没通过清洗`);
+    return { run: { ...run, status: "没抽出", error: keptLine(store, source, why) }, rejected: cleaned.rejected };
+  }
+  run.changed = store.replace(source, set, startedAt);
+  run.stored = set.rows.length;
+  return { run: { ...run, status: "ok", error: run.error }, rejected: cleaned.rejected };
 }
 
 interface RobotsResult {
@@ -97,6 +116,34 @@ async function robotsFor(deps: AppDeps, target: URL, lastHit: Map<string, number
   const result: RobotsResult = { unreadable, allowed: (pathAndQuery) => pathAllowed(body, pathAndQuery) };
   cache.set(target.origin, result);
   return result;
+}
+
+async function attachHubCards(deps: AppDeps, drafts: readonly HotDraft[], host: string, robots: RobotsResult, lastHit: Map<string, number>): Promise<HotDraft[]> {
+  const head = drafts.slice(0, 25);
+  const rest = drafts.slice(25);
+  const next: HotDraft[] = [];
+  for (const draft of head) {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(draft.title)) {
+      next.push(draft);
+      continue;
+    }
+    const pathName = `/${draft.title.split("/").map((part) => encodeURIComponent(part)).join("/")}/raw/main/README.md`;
+    if (!robots.allowed(pathName)) {
+      next.push(draft);
+      continue;
+    }
+    await waitHost(lastHit, host, deps);
+    const page = await fetchText(deps, `https://${host}${pathName}`, null);
+    let sameHost = false;
+    try {
+      sameHost = new URL(page.finalUrl).host === host;
+    } catch {
+      sameHost = false;
+    }
+    const blurb = page.ok && sameHost ? hubBlurb(page.body) : "";
+    next.push(blurb ? { ...draft, summary: blurb, excerpt: blurb } : draft);
+  }
+  return [...next, ...rest];
 }
 
 async function waitHost(lastHit: Map<string, number>, host: string, deps: AppDeps): Promise<void> {
@@ -129,6 +176,32 @@ async function fetchText(deps: AppDeps, url: string, kaggle: AppDeps["kaggle"]):
     const raw = error instanceof Error ? error.message : String(error);
     return { ok: false, status: null, body: "", contentType: "", finalUrl: url, error: /timeout|aborted/i.test(raw) ? "超过 30 秒没有响应" : "没有连上" };
   }
+}
+
+function keptLine(store: LedgerStore, source: SourceDef, why: string): string {
+  return store.count(source) > 0 ? `${why}。上次成功的行还留着` : `${why}。库里也没有上一轮的行`;
+}
+
+const COLUMN_NAME: Record<ColumnKind, string> = { hot: "热榜", price: "价目", rank: "排名", event: "厂商动态" };
+
+/** 推送开关打开的栏目，把这一轮的变化写进 dataDir/digests。 */
+async function writeDigests(deps: AppDeps, store: LedgerStore, sources: readonly SourceDef[]): Promise<void> {
+  const day = shanghaiDate(deps.now());
+  const columns = [...new Set(sources.map((source) => source.column))];
+  const folder = path.join(deps.dataDir, "digests");
+  for (const column of columns) {
+    if (!store.setting(`push_${column}`, column === "hot")) continue;
+    const diffs = store.diffs(300).filter((diff) => diff.column === column && diff.fetchedAt.startsWith(day));
+    const lines = diffs.length === 0
+      ? [`# ${COLUMN_NAME[column]} ${day}`, "这一栏本轮没有相对上一轮的变化。"]
+      : [`# ${COLUMN_NAME[column]} ${day}`, ...diffs.map((diff) => `- ${diff.label}：${diff.field} ${shownDiff(diff.field, diff.oldValue) || "空"} → ${shownDiff(diff.field, diff.newValue)}`)];
+    await mkdir(folder, { recursive: true });
+    await appendFile(path.join(folder, `${day}.md`), `${lines.join("\n")}\n\n`, "utf8");
+  }
+}
+
+function shownDiff(field: string, value: string): string {
+  return field === "价格" ? displayMoneyText(value) : value;
 }
 
 function httpReason(status: number): string {
