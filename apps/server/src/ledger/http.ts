@@ -5,6 +5,7 @@ import { BLOCKED_PAGES, USD_TO_CNY, cnyAmount, cnyLabel, displayMoneyText, fallb
 import { bad } from "../http-error.js";
 import type { AppDeps } from "../types.js";
 import { llmBrief } from "./brief.js";
+import { listDigests, readDigest, validDigestDay } from "./digests.js";
 import { runLedger } from "./run.js";
 import { LedgerStore, type DiffView, type EventView, type HotView, type PriceView, type RankView, type SourceView } from "./store.js";
 
@@ -14,6 +15,9 @@ interface RunState {
   total: number;
   current: string;
   error: string;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number | null;
 }
 
 const COLUMNS = new Set<string>(["hot", "price", "rank", "event"]);
@@ -42,7 +46,7 @@ function validRowId(value: unknown): value is number {
 
 export function mountLedger(app: Hono, deps: AppDeps): LedgerStore {
   const store = new LedgerStore(path.join(deps.dataDir, "headline.sqlite"));
-  const run: RunState = { state: "idle", done: 0, total: 0, current: "", error: "" };
+  const run: RunState = { state: "idle", done: 0, total: 0, current: "", error: "", startedAt: "", finishedAt: "", durationMs: null };
   const today = () => shanghaiDate(deps.now());
 
   app.get("/api/ledger/home", (c) => {
@@ -53,6 +57,8 @@ export function mountLedger(app: Hono, deps: AppDeps): LedgerStore {
     const events = store.events();
     return c.json({
       day,
+      freshness: freshness(sources),
+      highlights: store.highlightsOn(day),
       hotEnabled: { github: enabled(HOT_IDS.github), huggingface: enabled(HOT_IDS.huggingface), kaggle: enabled(HOT_IDS.kaggle) },
       hot: firstPer(hot, (row) => row.sourceId, 3),
       usdToCny: USD_TO_CNY,
@@ -73,6 +79,8 @@ export function mountLedger(app: Hono, deps: AppDeps): LedgerStore {
       kind: column,
       day,
       changes: store.changesOn(day, column),
+      diffs: store.diffsOn(day, column),
+      watches: store.watches(),
       push: store.setting(`push_${column}`, column === "hot"),
       baseline: store.okRuns(column) <= 1,
       usdToCny: USD_TO_CNY,
@@ -107,6 +115,18 @@ export function mountLedger(app: Hono, deps: AppDeps): LedgerStore {
 
   app.get("/api/ledger/sources", (c) => c.json({ sources: store.sources(), run }));
 
+  app.get("/api/ledger/digests", async (c) => c.json({ digests: await listDigests(deps.dataDir) }));
+  app.get("/api/ledger/digests/:day", async (c) => {
+    const day = c.req.param("day");
+    if (!validDigestDay(day)) throw bad(400, "DAY_INVALID", "请选择有效的简报日期。");
+    const text = await readDigest(deps.dataDir, day).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") throw bad(404, "DIGEST_NOT_FOUND", "这一天还没有生成简报。");
+      throw error;
+    });
+    if (c.req.query("download") === "1") return c.text(text, 200, { "content-type": "text/markdown; charset=utf-8", "content-disposition": `attachment; filename="headline-chaser-${day}.md"` });
+    return c.json({ day, text });
+  });
+
   app.post("/api/ledger/sources/:id", async (c) => {
     const id = c.req.param("id");
     if (!sourceById(id)) throw bad(404, "SOURCE_NOT_FOUND", "没有这个来源。");
@@ -138,16 +158,24 @@ export function mountLedger(app: Hono, deps: AppDeps): LedgerStore {
     if (run.state === "running") throw bad(409, "JOB_BUSY", "这一轮还没结束。");
     const body = await jsonObject(c.req);
     if (body.ids !== undefined && !Array.isArray(body.ids)) throw bad(400, "SOURCE_INVALID", "来源必须是编号列表。");
-    const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === "string" && Boolean(sourceById(id))) : null;
-    if (ids && ids.length === 0) throw bad(400, "SOURCE_NOT_FOUND", "没有这个来源。");
-    Object.assign(run, { state: "running", done: 0, total: ids?.length ?? 0, current: "", error: "" });
+    if (body.retryNetworkOnly !== undefined && typeof body.retryNetworkOnly !== "boolean") throw bad(400, "RETRY_INVALID", "重试选项必须是布尔值。");
+    if (body.retryNetworkOnly && body.ids !== undefined) throw bad(400, "RETRY_INVALID", "网络重试不能同时指定来源。");
+    if (Array.isArray(body.ids) && body.ids.some((id) => typeof id !== "string" || !sourceById(id))) throw bad(400, "SOURCE_INVALID", "来源编号无效。");
+    const ids = body.retryNetworkOnly ? store.sources().filter((source) => source.enabled && source.retryable).map((source) => source.id) : Array.isArray(body.ids) ? [...new Set(body.ids as string[])] : null;
+    if (ids && ids.length === 0) throw bad(400, "SOURCE_NOT_FOUND", body.retryNetworkOnly ? "没有可重试的网络失败来源。" : "没有选中来源。");
+    const started = performance.now();
+    Object.assign(run, { state: "running", done: 0, total: ids?.length ?? store.sources().filter((source) => source.enabled).length, current: "", error: "", startedAt: deps.now().toISOString(), finishedAt: "", durationMs: null });
     void runLedger(deps, store, ids, (progress) => {
       Object.assign(run, progress);
     }).then(() => {
       run.state = "idle";
+      run.finishedAt = deps.now().toISOString();
+      run.durationMs = Math.round(performance.now() - started);
     }).catch((error: unknown) => {
       run.state = "idle";
       run.error = error instanceof Error ? error.message : "这一轮没有跑完。";
+      run.finishedAt = deps.now().toISOString();
+      run.durationMs = Math.round(performance.now() - started);
     });
     return c.json({ ok: true, run });
   });
@@ -158,15 +186,19 @@ export function mountLedger(app: Hono, deps: AppDeps): LedgerStore {
     const prices = store.prices();
     const ranks = store.ranks();
     const events = store.events().filter((row) => row.type !== "status");
+    const hot = store.hot();
     const diffs = store.diffs(500);
     return c.json({
       names,
+      candidates: watchCandidates(prices, ranks, hot),
       hits: names.map((name) => ({
         name,
-        prices: prices.filter((row) => watchHits(name, row.product)).map(presentPrice),
-        ranks: ranks.filter((row) => watchHits(name, row.model)),
+        noMatchReason: !watchHits(name, name) ? "名字过短或属于通用档位词，请从已有条目选择完整名称。" : !prices.some((row) => watchHits(name, priceWatchName(row))) && !ranks.some((row) => watchHits(name, rankWatchName(row))) && !events.some((row) => watchHits(name, row.title)) && !hot.some((row) => watchHits(name, row.title)) ? "当前已入库的条目中均未匹配到完整名称。请检查拼写和版本，并在采集页确认相关来源是否成功。" : "",
+        prices: prices.filter((row) => watchHits(name, priceWatchName(row))).map(presentPrice),
+        ranks: ranks.filter((row) => watchHits(name, rankWatchName(row))),
+        hot: hot.filter((row) => watchHits(name, row.title)).map(presentHot),
         events: events.filter((row) => watchHits(name, row.title)).slice(0, 8).map(presentEvent),
-        diffs: diffs.filter((diff) => diff.fetchedAt.startsWith(day) && watchHits(name, `${diff.label} ${diff.rowKey}`)).map(presentDiff),
+        diffs: diffs.filter((diff) => diff.fetchedAt.startsWith(day) && (watchHits(name, `${diff.label} ${diff.rowKey}`) || watchHits(name, `${diff.vendor} ${diff.label}`) || ranks.some((row) => row.sourceId === diff.sourceId && row.model === diff.label && watchHits(name, rankWatchName(row))))).map(presentDiff),
       })),
     });
   });
@@ -194,6 +226,33 @@ function homePriceScore(row: PriceView): number {
   if (/低谷|off-peak|限时|试用/i.test(row.condition)) score -= 6;
   if (/高峰/.test(row.condition)) score += 1;
   return score;
+}
+
+function freshness(sources: SourceView[]) {
+  const active = sources.filter((source) => source.enabled);
+  const times = active.map((source) => source.lastSuccessAt).filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b));
+  return { latestSuccessAt: times.at(-1) ?? "", oldestSuccessAt: times[0] ?? "", failed: active.filter((source) => source.run?.status === "failed").length, issues: active.filter((source) => source.run && source.run.status !== "ok").length, neverSucceeded: active.filter((source) => !source.lastSuccessAt).length, enabled: active.length };
+}
+
+function watchCandidates(prices: PriceView[], ranks: RankView[], hot: HotView[]) {
+  const choices = new Map<string, { name: string; columns: string[] }>();
+  for (const row of [...prices, ...ranks, ...hot]) {
+    const name = "product" in row ? priceWatchName(row) : "model" in row ? rankWatchName(row) : row.title;
+    if (!watchHits(name, name)) continue;
+    const choice = choices.get(name) ?? { name, columns: [] };
+    const column = "product" in row ? "价目表" : "model" in row ? "排名" : "热榜";
+    if (!choice.columns.includes(column)) choice.columns.push(column);
+    choices.set(name, choice);
+  }
+  return [...choices.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function priceWatchName(row: PriceView) {
+  return row.kind !== "plan" && watchHits(row.product, row.product) ? row.product : `${row.vendor} ${row.product}`;
+}
+
+function rankWatchName(row: RankView) {
+  return watchHits(row.model, row.model) ? row.model : `${row.org || row.board} ${row.model}`;
 }
 
 /** 首页每家一条输入价。不拿未标价和低谷价当这家的标价。 */
@@ -264,6 +323,11 @@ function presentPrice(row: PriceView) {
     reset,
     brief,
     officialPrice: row.price,
+    officialAmount: row.amount,
+    officialCurrency: row.currency,
+    officialCondition: row.condition,
+    watchName: priceWatchName(row),
+    provenance: { extraction: row.provenance?.extraction ?? "unknown", modelFields: row.provenance?.modelFields ?? [], brief: "rule" as const },
   };
 }
 
@@ -299,7 +363,7 @@ function presentColumn(column: ColumnKind, rows: PriceView[] | RankView[] | HotV
     case "hot":
       return (rows as HotView[]).map(presentHot);
     case "rank":
-      return rows as RankView[];
+      return (rows as RankView[]).map((row) => ({ ...row, watchName: rankWatchName(row) }));
     default: {
       const unreachable: never = column;
       return unreachable;

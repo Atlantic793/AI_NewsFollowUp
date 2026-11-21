@@ -1,7 +1,7 @@
 import { useEffect, useState, type MouseEvent } from "react";
 import { Link } from "react-router-dom";
 import { request } from "../api";
-import type { EventView, HotView, Kind, PriceView, RankView } from "../types";
+import { COLUMN_TITLES, clock, diffText, type DiffView, type EventView, type HotView, type Kind, type PriceView, type RankView } from "../types";
 
 interface HomeBody {
   day: string;
@@ -15,6 +15,8 @@ interface HomeBody {
   outages: number;
   changes: Record<Kind, number>;
   baselines: Record<Kind, boolean>;
+  freshness: { latestSuccessAt: string; oldestSuccessAt: string; failed: number; issues: number; neverSucceeded: number; enabled: number };
+  highlights: DiffView[];
 }
 
 const HOT_IDS = { github: "H01", huggingface: "H02", kaggle: "H03" } as const;
@@ -58,9 +60,23 @@ export function HomePage() {
         <nav>
           <Link to="/watch">定制</Link>
           <Link to="/collect">采集</Link>
+          <Link to="/digests">简报</Link>
         </nav>
       </header>
       {error ? <p className="shot-error">{error}</p> : null}
+      <section className="home-updates" aria-label="今日重点变化">
+        <div className="home-freshness">
+          <span>最近成功 <strong>{clock(data?.freshness.latestSuccessAt ?? "")}</strong></span>
+          <span>最早数据 <strong>{clock(data?.freshness.oldestSuccessAt ?? "")}</strong></span>
+          <Link to="/collect">{data?.freshness.failed ?? 0} 个失败来源 · {data?.freshness.issues ?? 0} 个异常来源</Link>
+          {data && data.freshness.neverSucceeded > 0 ? <span>{data.freshness.neverSucceeded}/{data.freshness.enabled} 个启用来源尚未成功</span> : null}
+        </div>
+        <div className="home-update-head"><h2>今日重点变化</h2><span>价格与服务状态优先</span></div>
+        <ul className="home-update-list">
+          {(data?.highlights ?? []).map((diff) => <li key={diff.id}><Link to={`/columns/${diff.column}?changes=1&source=${diff.sourceId}&diff=${diff.id}`}><small>{COLUMN_TITLES[diff.column]} · {diff.vendor}</small><strong>{diff.label}</strong><span>{diffText(diff)}</span><time>{clock(diff.fetchedAt)}</time></Link></li>)}
+        </ul>
+        {data && data.highlights.length === 0 ? <p className="shot-empty">今天还没有记录到变化。首次成功采集作为基线，下一轮开始比较。</p> : null}
+      </section>
       <div className="shot-grid">
         <Link className="shot-card" to="/columns/hot">
           <div className="shot-card-head"><h2>热榜</h2><Changes count={data?.changes.hot ?? 0} baseline={data?.baselines.hot ?? false} /></div>

@@ -5,6 +5,10 @@ export async function startRun(ids?: readonly string[]): Promise<void> {
   await request("/api/ledger/run", { method: "POST", body: JSON.stringify(ids ? { ids } : {}) });
 }
 
+export async function retryNetworkFailures(): Promise<void> {
+  await request("/api/ledger/run", { method: "POST", body: JSON.stringify({ retryNetworkOnly: true }) });
+}
+
 export async function waitRun(onTick?: (run: RunState) => void): Promise<void> {
   for (let attempt = 0; attempt < 400; attempt += 1) {
     const body = await request<{ run: RunState }>("/api/ledger/sources");

@@ -34,20 +34,25 @@ export function applyPriceGaps(body: string, rows: readonly PriceRow[], gaps: re
     for (const row of next) {
       if (row.product.toLocaleLowerCase() !== product.toLocaleLowerCase()) continue;
       const comparison = row.comparison ?? { condition: row.condition, quota: row.quota, reset: row.reset };
+      const modelFields = new Set(row.provenance?.modelFields ?? []);
       let rowUsed = false;
       if (!row.quota && gap.quota.trim()) {
         row.quota = gap.quota.trim();
+        modelFields.add("quota");
         rowUsed = true;
       }
       if (!row.reset && gap.reset.trim()) {
         row.reset = gap.reset.trim();
+        modelFields.add("reset");
         rowUsed = true;
       }
       if (!row.condition && gap.condition.trim()) {
         row.condition = gap.condition.trim();
+        modelFields.add("condition");
         rowUsed = true;
       }
       if (rowUsed) {
+        row.provenance = { extraction: row.provenance?.extraction ?? "unknown", brief: row.provenance?.brief ?? "unknown", modelFields: [...modelFields] };
         row.comparison = { ...comparison, evidence: [...new Set([...(comparison.evidence ?? []), excerpt])] };
         used = true;
         if (!row.excerpt.includes(excerpt)) row.excerpt = `${row.excerpt}\n${excerpt}`.slice(0, 1200);

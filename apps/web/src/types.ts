@@ -18,6 +18,8 @@ export interface RunRecord {
   llmDrafts: number;
   llmKept: number;
   llmDropped: number;
+  durationMs?: number | null;
+  failureKind?: string;
 }
 
 export interface SourceView {
@@ -30,6 +32,8 @@ export interface SourceView {
   enabled: boolean;
   needs: string;
   run: RunRecord | null;
+  lastSuccessAt: string;
+  retryable: boolean;
   stale?: boolean;
   staleReason?: string;
   rowsFetchedAt?: string;
@@ -37,9 +41,10 @@ export interface SourceView {
   fallbackNote?: string;
 }
 
-export interface RunState { state: "idle" | "running"; done: number; total: number; current: string; error: string }
+export interface RunState { state: "idle" | "running"; done: number; total: number; current: string; error: string; startedAt?: string; finishedAt?: string; durationMs?: number | null }
 
-interface RowBase { id: number; sourceId: string; fetchedAt: string; excerpt: string; brief: string }
+export interface Provenance { extraction: "rule" | "model" | "unknown"; modelFields: string[]; brief: "rule" | "model" | "unknown" }
+export interface RowBase { id: number; sourceId: string; fetchedAt: string; excerpt: string; brief: string; provenance?: Provenance }
 
 export interface PriceView extends RowBase {
   vendor: string;
@@ -56,6 +61,10 @@ export interface PriceView extends RowBase {
   quota: string;
   reset: string;
   officialPrice?: string;
+  officialAmount?: number | null;
+  officialCurrency?: "USD" | "CNY" | "";
+  officialCondition?: string;
+  watchName?: string;
 }
 
 export interface RankView extends RowBase {
@@ -68,6 +77,7 @@ export interface RankView extends RowBase {
   votes: string;
   boardDate: string;
   basis: "printed" | "sorted";
+  watchName?: string;
 }
 
 export interface HotView extends RowBase {
@@ -151,4 +161,13 @@ export function clock(iso: string): string {
   if (!iso || Number.isNaN(date.getTime())) return "—";
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getMonth() + 1}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+export function duration(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined) return "未记录";
+  return ms < 60_000 ? `${(ms / 1000).toFixed(1)} 秒` : `${Math.floor(ms / 60_000)} 分 ${Math.round(ms % 60_000 / 1000)} 秒`;
+}
+
+export function diffText(diff: DiffView): string {
+  return diff.field === "row" ? diff.newValue : `${diff.field} ${diff.oldValue || "空"} → ${diff.newValue || "空"}`;
 }

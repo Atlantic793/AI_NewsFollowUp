@@ -71,6 +71,7 @@ async function fillFromModel(deps: AppDeps, source: SourceDef, body: string, cle
     const reason = gated.dropped.length > 0 || drafts.length > 0 ? "模型抽出的字段对不上原文" : "模型没有返回可用结果";
     return { set: cleaned, drafts: drafts.length, kept: 0, dropped, note: [note, reason].filter(Boolean).join("。") };
   }
+  for (const row of set.rows) row.provenance = { extraction: "model", modelFields: [], brief: "unknown" };
   return { set: withLocalBriefs(source, set), drafts: drafts.length, kept, dropped, note };
 }
 
@@ -119,6 +120,7 @@ function carryPriceGaps(body: string, rows: readonly PriceRow[], previous: Clean
     if (!row.reset && old.reset !== basis.reset) next.reset = old.reset;
     if (!row.condition && old.condition !== basis.condition) next.condition = old.condition;
     if (next.quota !== row.quota || next.reset !== row.reset || next.condition !== row.condition) {
+      next.provenance = { extraction: row.provenance?.extraction ?? "unknown", brief: row.provenance?.brief ?? "unknown", modelFields: ["quota", "reset", "condition"].filter((key) => next[key as "quota" | "reset" | "condition"] !== row[key as "quota" | "reset" | "condition"]) };
       next.comparison = { condition: row.condition, quota: row.quota, reset: row.reset, evidence: basis.evidence };
       next.excerpt = [...new Set([row.excerpt, ...basis.evidence])].join("\n").slice(0, 1200);
     }
@@ -152,14 +154,15 @@ async function polishEvents(deps: AppDeps, source: SourceDef, cleaned: CleanedSe
   const localBrief = new Map(local.rows.map((row) => [`${row.title}\n${row.excerpt}`, row.brief]));
   const rows = carried.map((row) => {
     const key = `${row.title}\n${row.excerpt}`;
-    if (briefed.has(key)) return { ...row, brief: briefed.get(key) ?? "" };
-    return { ...row, brief: localBrief.get(key) || row.brief };
+    if (briefed.has(key)) return tracedBrief(row, briefed.get(key) ?? "", "model");
+    const brief = localBrief.get(key) || row.brief;
+    return tracedBrief(row, brief, row.brief ? row.provenance?.brief ?? "unknown" : "rule");
   });
   return { set: { column: "event", rows, rejected: cleaned.rejected }, drafts: returned.length, kept, dropped, note: "" };
 }
 
 async function polishHot(deps: AppDeps, cleaned: CleanedSet & { column: "hot" }, previous: CleanedSet): Promise<AssistOutcome> {
-  const carried = carryHotBriefs(cleaned.rows.map((row) => ({ ...row, brief: localHotBrief(row.summary) })), previous);
+  const carried = carryHotBriefs(cleaned.rows.map((row) => tracedBrief(row, localHotBrief(row.summary), "rule")), previous);
   const ready = (): CleanedSet => ({ column: "hot", rows: carried, rejected: cleaned.rejected });
   if (!process.env.OPENAI_API_KEY) return { set: ready(), drafts: 0, kept: 0, dropped: 0, note: "" };
   const batch = carried.filter((row) => !row.brief).slice(0, 25);
@@ -182,7 +185,8 @@ async function polishHot(deps: AppDeps, cleaned: CleanedSet & { column: "hot" },
   const rows = carried.map((row) => {
     const key = `${row.title}\n${row.excerpt}`;
     if (!briefed.has(key)) return row;
-    return { ...row, brief: briefed.get(key) || localHotBrief(row.summary) };
+    const modelBrief = briefed.get(key);
+    return tracedBrief(row, modelBrief || localHotBrief(row.summary), modelBrief ? "model" : "rule");
   });
   return { set: { column: "hot", rows, rejected: cleaned.rejected }, drafts: returned.length, kept, dropped, note: "" };
 }
@@ -198,7 +202,7 @@ function carryHotBriefs(rows: readonly HotRow[], previous: CleanedSet): HotRow[]
   return rows.map((row) => {
     if (row.brief) return { ...row };
     const old = previous.rows.find((item) => item.excerpt === row.excerpt && item.title === row.title && usableHotBrief(item.brief));
-    return old ? { ...row, brief: old.brief } : { ...row };
+    return old ? tracedBrief(row, old.brief, old.provenance?.brief ?? "unknown") : { ...row };
   });
 }
 
@@ -214,10 +218,14 @@ function carryBriefs(rows: readonly EventRow[], previous: CleanedSet): EventRow[
   return rows.map((row) => {
     // 规则降级生成的概括不能当作模型缓存，模型恢复后应重新尝试。
     const old = previous.rows.find((item) => item.excerpt === row.excerpt && item.title === row.title && item.brief && item.brief !== eventSentence(item));
-    if (old) return { ...row, brief: old.brief };
-    if (row.detail.startsWith("正常")) return { ...row, brief: eventSentence(row) };
+    if (old) return tracedBrief(row, old.brief, old.provenance?.brief ?? "unknown");
+    if (row.detail.startsWith("正常")) return tracedBrief(row, eventSentence(row), "rule");
     return { ...row, brief: row.brief === eventSentence(row) ? "" : row.brief };
   });
+}
+
+function tracedBrief<T extends EventRow | HotRow>(row: T, brief: string, origin: "rule" | "model" | "unknown"): T {
+  return { ...row, brief, provenance: { extraction: row.provenance?.extraction ?? "unknown", modelFields: row.provenance?.modelFields ?? [], brief: origin } };
 }
 
 function records(value: unknown, key: string): Array<Record<string, unknown>> {

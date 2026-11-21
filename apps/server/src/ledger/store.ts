@@ -11,17 +11,20 @@ import {
   type EventRow,
   type HotRow,
   type PriceRow,
+  type Provenance,
   type RankRow,
   type Rejected,
   type SourceDef,
 } from "@followup/core";
 
-const SCHEMA = 4;
+const SCHEMA = 5;
 const SAMPLES_PER_REASON = 3;
 
 export type RunStatus = "ok" | "没抽出" | "skipped" | "failed";
 
 export interface RunRecord {
+  durationMs?: number | null;
+  failureKind?: "network" | "access" | "parse" | "policy" | "credentials" | "";
   sourceId: string;
   startedAt: string;
   status: RunStatus;
@@ -51,6 +54,8 @@ export interface SourceView {
   enabled: boolean;
   needs: string;
   run: RunRecord | null;
+  lastSuccessAt: string;
+  retryable: boolean;
 }
 
 export interface PriceView extends PriceRow { id: number; sourceId: string; vendor: string; page: string; fetchedAt: string }
@@ -129,6 +134,9 @@ export class LedgerStore {
     this.ensureColumn("runs", "llm_drafts", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("runs", "llm_kept", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("runs", "llm_dropped", "INTEGER NOT NULL DEFAULT 0");
+    for (const table of ["prices", "ranks", "hot", "events"]) this.ensureColumn(table, "provenance", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("runs", "duration_ms", "INTEGER");
+    this.ensureColumn("runs", "failure_kind", "TEXT NOT NULL DEFAULT ''");
     this.db.exec(`PRAGMA user_version = ${SCHEMA}`);
     const insert = this.db.prepare("INSERT INTO sources (id, enabled) VALUES (?, ?) ON CONFLICT(id) DO NOTHING");
     for (const source of SOURCES) insert.run(source.id, source.enabled ? 1 : 0);
@@ -142,6 +150,7 @@ export class LedgerStore {
   sources(): SourceView[] {
     const enabled = new Map((this.db.prepare("SELECT id, enabled FROM sources").all() as Raw[]).map((row) => [text(row.id), Number(row.enabled) === 1]));
     const runs = new Map((this.db.prepare("SELECT * FROM runs WHERE id IN (SELECT MAX(id) FROM runs GROUP BY source_id)").all() as Raw[]).map((row) => [text(row.source_id), mapRun(row)]));
+    const successes = new Map((this.db.prepare("SELECT source_id, started_at FROM runs WHERE id IN (SELECT MAX(id) FROM runs WHERE status = 'ok' GROUP BY source_id)").all() as Raw[]).map((row) => [text(row.source_id), text(row.started_at)]));
     return SOURCES.map((source) => ({
       id: source.id,
       vendor: source.vendor,
@@ -152,6 +161,8 @@ export class LedgerStore {
       enabled: enabled.get(source.id) ?? source.enabled,
       needs: source.needs ?? "",
       run: runs.get(source.id) ?? null,
+      lastSuccessAt: successes.get(source.id) ?? "",
+      retryable: isNetworkFailure(runs.get(source.id) ?? null),
     }));
   }
 
@@ -161,9 +172,9 @@ export class LedgerStore {
 
   recordRun(run: RunRecord, rejected: readonly Rejected[]): void {
     this.db.prepare(`INSERT INTO runs (source_id, started_at, status, http_status, error, bytes, content_hash, raw_path,
-      extracted, cleaned, stored, changed, rejected, reasons, llm_drafts, llm_kept, llm_dropped) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      extracted, cleaned, stored, changed, rejected, reasons, llm_drafts, llm_kept, llm_dropped, duration_ms, failure_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(run.sourceId, run.startedAt, run.status, run.httpStatus, run.error, run.bytes, run.hash, run.rawPath,
-        run.extracted, run.cleaned, run.stored, run.changed, run.rejected, JSON.stringify(run.reasons), run.llmDrafts, run.llmKept, run.llmDropped);
+        run.extracted, run.cleaned, run.stored, run.changed, run.rejected, JSON.stringify(run.reasons), run.llmDrafts, run.llmKept, run.llmDropped, run.durationMs ?? null, run.failureKind ?? "");
     this.db.prepare("DELETE FROM rejects WHERE source_id = ?").run(run.sourceId);
     const insert = this.db.prepare("INSERT INTO rejects (source_id, reason, excerpt) VALUES (?, ?, ?)");
     const kept = new Map<string, number>();
@@ -235,25 +246,25 @@ export class LedgerStore {
   private insertRows(sourceId: string, set: CleanedSet, fetchedAt: string): void {
     switch (set.column) {
       case "price": {
-        const insert = this.db.prepare(`INSERT INTO prices (source_id, kind, product, tier, metric, condition, price, amount, currency, unit, quota, reset_rule, fetched_at, excerpt, brief, comparison)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-        for (const row of set.rows) insert.run(sourceId, row.kind, row.product, row.tier, row.metric, row.condition, row.price, row.amount, row.currency, row.unit, row.quota, row.reset, fetchedAt, row.excerpt, row.brief, row.comparison ? JSON.stringify(row.comparison) : "");
+        const insert = this.db.prepare(`INSERT INTO prices (source_id, kind, product, tier, metric, condition, price, amount, currency, unit, quota, reset_rule, fetched_at, excerpt, brief, comparison, provenance)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        for (const row of set.rows) insert.run(sourceId, row.kind, row.product, row.tier, row.metric, row.condition, row.price, row.amount, row.currency, row.unit, row.quota, row.reset, fetchedAt, row.excerpt, row.brief, row.comparison ? JSON.stringify(row.comparison) : "", JSON.stringify(row.provenance ?? null));
         return;
       }
       case "rank": {
-        const insert = this.db.prepare(`INSERT INTO ranks (source_id, rank_no, model, org, score, score_value, votes, board_date, basis, fetched_at, excerpt, brief)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-        for (const row of set.rows) insert.run(sourceId, row.rank, row.model, row.org, row.score, row.scoreValue, row.votes, row.boardDate, row.basis, fetchedAt, row.excerpt, row.brief);
+        const insert = this.db.prepare(`INSERT INTO ranks (source_id, rank_no, model, org, score, score_value, votes, board_date, basis, fetched_at, excerpt, brief, provenance)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        for (const row of set.rows) insert.run(sourceId, row.rank, row.model, row.org, row.score, row.scoreValue, row.votes, row.boardDate, row.basis, fetchedAt, row.excerpt, row.brief, JSON.stringify(row.provenance ?? null));
         return;
       }
       case "hot": {
-        const insert = this.db.prepare("INSERT INTO hot (source_id, rank_no, title, url, heat, summary, fetched_at, excerpt, brief) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        for (const row of set.rows) insert.run(sourceId, row.rank, row.title, row.url, row.heat, row.summary, fetchedAt, row.excerpt, row.brief);
+        const insert = this.db.prepare("INSERT INTO hot (source_id, rank_no, title, url, heat, summary, fetched_at, excerpt, brief, provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        for (const row of set.rows) insert.run(sourceId, row.rank, row.title, row.url, row.heat, row.summary, fetchedAt, row.excerpt, row.brief, JSON.stringify(row.provenance ?? null));
         return;
       }
       case "event": {
-        const insert = this.db.prepare("INSERT INTO events (source_id, type, title, date, detail, url, fetched_at, excerpt, brief) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        for (const row of set.rows) insert.run(sourceId, row.type, row.title, row.date, row.detail, row.url, fetchedAt, row.excerpt, row.brief);
+        const insert = this.db.prepare("INSERT INTO events (source_id, type, title, date, detail, url, fetched_at, excerpt, brief, provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        for (const row of set.rows) insert.run(sourceId, row.type, row.title, row.date, row.detail, row.url, fetchedAt, row.excerpt, row.brief, JSON.stringify(row.provenance ?? null));
         return;
       }
       default: {
@@ -303,6 +314,7 @@ export class LedgerStore {
         fetchedAt: text(row.fetched_at),
         excerpt: text(row.excerpt),
         brief: text(row.brief),
+        provenance: provenanceOf(text(row.provenance)),
       };
     });
   }
@@ -326,6 +338,7 @@ export class LedgerStore {
         fetchedAt: text(row.fetched_at),
         excerpt: text(row.excerpt),
         brief: text(row.brief),
+        provenance: provenanceOf(text(row.provenance)),
       };
     });
   }
@@ -343,6 +356,7 @@ export class LedgerStore {
       fetchedAt: text(row.fetched_at),
       excerpt: text(row.excerpt),
       brief: text(row.brief),
+      provenance: provenanceOf(text(row.provenance)),
     }));
   }
 
@@ -360,6 +374,7 @@ export class LedgerStore {
       fetchedAt: text(row.fetched_at),
       excerpt: text(row.excerpt),
       brief: text(row.brief),
+      provenance: provenanceOf(text(row.provenance)),
     }));
   }
 
@@ -378,6 +393,17 @@ export class LedgerStore {
 
   diffs(limit: number): DiffView[] {
     return this.mapDiffs(this.db.prepare("SELECT * FROM diffs ORDER BY id DESC LIMIT ?").all(limit) as Raw[]);
+  }
+
+  diffsOn(day: string, column?: ColumnKind, limit = 500): DiffView[] {
+    const rows = column
+      ? this.db.prepare("SELECT * FROM diffs WHERE fetched_at LIKE ? AND column_kind = ? ORDER BY id DESC LIMIT ?").all(`${day}%`, column, limit)
+      : this.db.prepare("SELECT * FROM diffs WHERE fetched_at LIKE ? ORDER BY id DESC LIMIT ?").all(`${day}%`, limit);
+    return this.mapDiffs(rows as Raw[]);
+  }
+
+  highlightsOn(day: string): DiffView[] {
+    return this.mapDiffs(this.db.prepare("SELECT * FROM diffs WHERE fetched_at LIKE ? ORDER BY CASE field WHEN '价格' THEN 3 WHEN '状态' THEN 2 WHEN 'row' THEN 0 ELSE 1 END DESC, id DESC LIMIT 6").all(`${day}%`) as Raw[]);
   }
 
   latestDiffId(): number {
@@ -455,6 +481,8 @@ function mapRun(row: Raw): RunRecord {
     reasons = {};
   }
   return {
+    durationMs: row.duration_ms === null || row.duration_ms === undefined ? null : Number(row.duration_ms),
+    failureKind: text(row.failure_kind) as RunRecord["failureKind"],
     sourceId: text(row.source_id),
     startedAt: text(row.started_at),
     status: runStatus(text(row.status)),
@@ -506,4 +534,19 @@ export function tableFor(column: ColumnKind): "prices" | "ranks" | "hot" | "even
       return unreachable;
     }
   }
+}
+
+function provenanceOf(value: string): Provenance {
+  try {
+    const data = JSON.parse(value) as Partial<Provenance> | null;
+    const origin = (v: unknown) => v === "rule" || v === "model" ? v : "unknown";
+    return { extraction: origin(data?.extraction), brief: origin(data?.brief), modelFields: Array.isArray(data?.modelFields) ? data.modelFields.filter((v): v is string => typeof v === "string") : [] };
+  } catch { return { extraction: "unknown", brief: "unknown", modelFields: [] }; }
+}
+
+/** 旧记录仅识别明确的暂时连接错误；权限、解析和凭据问题不自动重试。 */
+export function isNetworkFailure(run: RunRecord | null): boolean {
+  if (!run || run.status === "ok") return false;
+  if (run.failureKind) return run.failureKind === "network";
+  return run.httpStatus === 408 || run.httpStatus === 429 || (run.httpStatus !== null && run.httpStatus >= 500) || /没有连上|超过 30 秒|robots.txt 读不到/.test(run.error);
 }

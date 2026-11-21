@@ -5,6 +5,7 @@ import { HomePage } from "./pages/HomePage";
 import { ColumnPage } from "./pages/ColumnPage";
 import { WatchPage } from "./pages/WatchPage";
 import { CollectPage } from "./pages/CollectPage";
+import { DigestsPage } from "./pages/DigestsPage";
 import "./styles.css";
 
 createRoot(document.getElementById("root")!).render(
@@ -15,6 +16,7 @@ createRoot(document.getElementById("root")!).render(
         <Route path="/columns/:kind" element={<ColumnPage />} />
         <Route path="/watch" element={<WatchPage />} />
         <Route path="/collect" element={<CollectPage />} />
+        <Route path="/digests" element={<DigestsPage />} />
       </Routes>
     </BrowserRouter>
   </StrictMode>,

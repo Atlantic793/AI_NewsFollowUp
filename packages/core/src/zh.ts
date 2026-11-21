@@ -1,4 +1,4 @@
-import type { CleanedSet, EventRow, PriceRow, RankRow } from "./rows.js";
+import type { CleanedSet, EventRow, HotRow, PriceRow, RankRow } from "./rows.js";
 import type { SourceDef } from "./sources.js";
 import { cnyLabel } from "./money.js";
 
@@ -173,18 +173,22 @@ export function eventSentence(row: EventRow): string {
 export function withLocalBriefs(source: SourceDef, set: CleanedSet): CleanedSet {
   switch (set.column) {
     case "price":
-      return { column: "price", rejected: set.rejected, rows: set.rows.map((row) => ({ ...row, brief: row.brief || priceSentence(row) })) };
+      return { column: "price", rejected: set.rejected, rows: set.rows.map((row) => localBrief(row, priceSentence(row))) };
     case "rank": {
       const board = `${source.vendor} ${source.label}`;
-      return { column: "rank", rejected: set.rejected, rows: set.rows.map((row) => ({ ...row, brief: row.brief || rankSentence(row, board) })) };
+      return { column: "rank", rejected: set.rejected, rows: set.rows.map((row) => localBrief(row, rankSentence(row, board))) };
     }
     case "hot":
-      return { column: "hot", rejected: set.rejected, rows: set.rows.map((row) => ({ ...row, brief: row.brief || hotPurpose(row.summary) })) };
+      return { column: "hot", rejected: set.rejected, rows: set.rows.map((row) => localBrief(row, hotPurpose(row.summary))) };
     case "event":
-      return { column: "event", rejected: set.rejected, rows: set.rows.map((row) => ({ ...row, brief: row.brief || eventSentence(row) })) };
+      return { column: "event", rejected: set.rejected, rows: set.rows.map((row) => localBrief(row, eventSentence(row))) };
     default: {
       const unreachable: never = set;
       return unreachable;
     }
   }
+}
+
+function localBrief<T extends PriceRow | RankRow | HotRow | EventRow>(row: T, fallback: string): T {
+  return { ...row, brief: row.brief || fallback, provenance: { extraction: row.provenance?.extraction ?? "unknown", modelFields: row.provenance?.modelFields ?? [], brief: row.brief ? row.provenance?.brief ?? "unknown" : "rule" } };
 }

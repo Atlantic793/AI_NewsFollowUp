@@ -42,8 +42,16 @@ export interface EventDraft {
   excerpt: string;
 }
 
+export interface Provenance {
+  extraction: "rule" | "model" | "unknown";
+  modelFields: string[];
+  brief: "rule" | "model" | "unknown";
+}
+
+interface TracedRow { provenance?: Provenance }
+
 /** 清洗步的输出：字段已归一、去重、校验过必填项。 */
-export interface PriceRow {
+export interface PriceRow extends TracedRow {
   kind: "api" | "plan";
   product: string;
   tier: string;
@@ -61,7 +69,7 @@ export interface PriceRow {
   comparison?: { condition: string; quota: string; reset: string; evidence?: string[] };
 }
 
-export interface RankRow {
+export interface RankRow extends TracedRow {
   rank: number;
   model: string;
   org: string;
@@ -74,7 +82,7 @@ export interface RankRow {
   brief: string;
 }
 
-export interface HotRow {
+export interface HotRow extends TracedRow {
   rank: number;
   title: string;
   url: string;
@@ -86,7 +94,7 @@ export interface HotRow {
 
 export type EventType = EventDraft["type"] | "cn_access";
 
-export interface EventRow {
+export interface EventRow extends TracedRow {
   type: EventType;
   title: string;
   date: string;

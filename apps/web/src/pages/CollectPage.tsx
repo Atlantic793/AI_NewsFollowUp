@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { request } from "../api";
-import { startRun } from "../run";
-import { COLUMN_TITLES, clock, runNote, statusName, type Kind, type RunState, type SourceView } from "../types";
+import { retryNetworkFailures, startRun } from "../run";
+import { COLUMN_TITLES, clock, duration, runNote, statusName, type Kind, type RunState, type SourceView } from "../types";
 
 interface Reject { reason: string; excerpt: string }
 
@@ -38,6 +38,8 @@ export function CollectPage() {
   const [focus, setFocus] = useState("");
   const [rejects, setRejects] = useState<Reject[]>([]);
   const [error, setError] = useState("");
+  const [onlyIssues, setOnlyIssues] = useState(false);
+  const [starting, setStarting] = useState(false);
 
   function load() {
     request<{ sources: SourceView[]; run: RunState }>("/api/ledger/sources").then((body) => {
@@ -60,13 +62,17 @@ export function CollectPage() {
     request<{ rejects: Reject[] }>(`/api/ledger/sources/${focus}/rejects`).then((body) => setRejects(body.rejects)).catch(() => setRejects([]));
   }, [focus, runKey]);
 
-  async function start(ids?: string[]) {
+  async function start(ids?: string[], retry = false) {
     setError("");
+    setStarting(true);
     try {
-      await startRun(ids);
+      if (retry) await retryNetworkFailures();
+      else await startRun(ids);
       load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "没有开始。");
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -80,9 +86,10 @@ export function CollectPage() {
     }
   }
 
-  const visible = sources.filter((source) => filter === "all" || source.column === filter);
+  const visible = sources.filter((source) => (filter === "all" || source.column === filter) && (!onlyIssues || (source.run && source.run.status !== "ok")));
   const count = (status: string) => sources.filter((source) => source.run?.status === status).length;
-  const running = run.state === "running";
+  const running = run.state === "running" || starting;
+  const retryCount = sources.filter((source) => source.enabled && source.retryable).length;
 
   return (
     <div className="desk ledger-desk">
@@ -93,6 +100,8 @@ export function CollectPage() {
           {running ? `正在跑 ${run.done}/${run.total}${run.current ? ` · ${run.current}` : ""}` : `入库 ${count("ok")} · 没抽出 ${count("没抽出")} · 跳过 ${count("skipped")} · 失败 ${count("failed")}`}
         </span>
         <div className="desk-top-gap" />
+        <Link to="/digests">查看简报</Link>
+        <button className="secondary-button" type="button" disabled={running || retryCount === 0} onClick={() => void start(undefined, true)}>只重试网络失败（{retryCount}）</button>
         <button className="desk-go" type="button" disabled={running} onClick={() => void start()}>再跑一轮</button>
       </header>
       {error || run.error ? <p className="ledger-error">{error || run.error}</p> : null}
@@ -111,9 +120,13 @@ export function CollectPage() {
         <div className="desk-split" />
         <main className="desk-main ledger-main">
           <div className="ledger-sheet">
+            <div className="ledger-tools">
+              <label><input type="checkbox" checked={onlyIssues} onChange={(event) => setOnlyIssues(event.target.checked)} />只看异常来源</label>
+              <span className="ledger-count">{run.startedAt ? `${run.state === "running" ? "本轮开始" : "上一轮开始"} ${clock(run.startedAt)} · ${run.state === "running" ? "采集中" : `耗时 ${duration(run.durationMs)}`}` : "尚未从本次服务启动后发起采集"}</span>
+            </div>
             <table className="collect-table">
               <thead>
-                <tr><th>来源</th><th>抓取</th><th>抽取</th><th>清洗后</th><th>丢弃</th><th>入库</th><th>变化</th><th>结果</th><th>时间</th></tr>
+                <tr><th>来源</th><th>抓取</th><th>抽取</th><th>清洗后</th><th>丢弃</th><th>入库</th><th>变化</th><th>结果</th><th>最近尝试</th><th>最后成功</th><th>耗时</th></tr>
               </thead>
               <tbody>
                 {visible.map((source) => {
@@ -129,11 +142,14 @@ export function CollectPage() {
                       <td className="num">{last ? last.changed : "—"}</td>
                       <td className={last && last.status !== "ok" ? "bad" : ""}>{statusName(last, source.enabled)}</td>
                       <td className="num">{last ? clock(last.startedAt) : "—"}</td>
+                      <td className="num">{clock(source.lastSuccessAt)}</td>
+                      <td className="num">{duration(last?.durationMs)}</td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
+            {onlyIssues && visible.length === 0 ? <p className="ledger-empty">当前栏目没有已记录的异常来源。</p> : null}
             <div className="collect-skip">
               <h3>不抓的页面</h3>
               <ul>{NOT_COLLECTED.map((line) => <li key={line}>{line}</li>)}</ul>
@@ -147,6 +163,8 @@ export function CollectPage() {
             {current ? (
               <>
                 <p className="excerpt-title">{current.vendor} · {current.label}</p>
+                <p>最后成功：{clock(current.lastSuccessAt)} · 最近耗时：{duration(current.run?.durationMs)}</p>
+                {current.retryable ? <p className="collect-why">暂时连接失败，可通过“只重试网络失败”重跑。</p> : null}
                 <a href={current.page} target="_blank" rel="noreferrer">{current.page}</a>
                 {current.url !== current.page ? <p className="collect-url">实际抓取：{current.url}</p> : null}
                 <ol className="steps">

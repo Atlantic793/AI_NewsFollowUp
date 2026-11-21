@@ -909,6 +909,83 @@ input.bench-find[type="text"]:focus { outline: none; border-bottom-color: #11111
 .watch-list { list-style: none; margin: 10px 0 0; padding: 0; }
 .watch-list li { padding: 6px 0; border-top: 1px solid #f2f2f2; font-size: 14px; }
 .watch-list small { display: block; color: #8a8a8a; font-size: 12px; }
+.secondary-button, .follow-button, .download-button { display: inline-block; border: 1px solid #dedede; border-radius: 9px; padding: 7px 11px; background: #fff; color: #222; text-decoration: none; font-size: 13px; white-space: nowrap; }
+.secondary-button:hover, .follow-button:hover { border-color: #155eef; color: #155eef; }
+button:disabled { cursor: default; opacity: .5; }
+.download-button { color: #fff; background: #111; border-color: #111; }
+.action-notice { margin: 10px 20px; color: #166534; font-size: 14px; }
+.home-updates { width: min(1080px, calc(100% - 48px)); margin: 28px auto 0; }
+.home-freshness { display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 12px 0; border-bottom: 1px solid #ececec; color: #777; font-size: 13px; }
+.home-freshness strong { color: #333; font-weight: 500; }
+.home-freshness a { color: #155eef; text-decoration: none; }
+.home-update-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 18px 0 8px; }
+.home-update-head h2 { margin: 0; font-size: 18px; }
+.home-update-head > span { color: #888; font-size: 12px; }
+.home-update-list { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; list-style: none; margin: 0; padding: 0; }
+.home-update-list li { min-width: 0; border-bottom: 1px solid #eee; }
+.home-update-list a { display: grid; grid-template-columns: 1fr auto; gap: 5px 10px; padding: 12px 0; color: inherit; text-decoration: none; }
+.home-update-list a:hover strong { color: #155eef; }
+.home-update-list small { color: #777; grid-column: 1 / -1; }
+.home-update-list strong { min-width: 0; overflow-wrap: anywhere; font-weight: 600; font-size: 14px; }
+.home-update-list span { color: #444; font-size: 13px; grid-column: 1; overflow-wrap: anywhere; }
+.home-update-list time { color: #888; font-size: 12px; grid-column: 2; grid-row: 2; white-space: nowrap; }
+.price-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 12px; padding: 14px 16px; border-bottom: 1px solid #eee; background: #fafbfc; }
+.price-filters label, .evidence-choice { display: flex; flex-direction: column; gap: 5px; color: #666; font-size: 12px; max-width: 100%; }
+.price-filters select, .evidence-choice select { border: 1px solid #ddd; border-radius: 7px; background: #fff; padding: 7px 24px 7px 8px; color: #222; font: inherit; font-size: 13px; max-width: 220px; min-width: 110px; }
+.price-filters label:nth-child(2) select { max-width: 240px; }
+.ledger-caption { margin: 12px 16px; color: #777; font-size: 12px; }
+.column-changes { margin: 12px 16px; padding: 0 14px 12px; border: 1px solid #d9e6ff; border-radius: 10px; background: #f8faff; }
+.column-changes h2 { padding: 12px 0 6px; font-size: 15px; }
+.column-changes ul { padding: 0; margin: 0; list-style: none; max-height: 330px; overflow: auto; }
+.column-changes li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 10px 6px; border-top: 1px solid #e4ebfa; font-size: 13px; overflow-wrap: anywhere; }
+.column-changes small { color: #777; }
+.column-changes button { padding: 0; border: 0; background: none; color: #155eef; font: inherit; text-align: left; }
+.column-changes p { margin: 8px 0 0; font-size: 13px; color: #666; }
+.column-changes li.selected-diff { background: #e4edff; }
+.evidence-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 12px 0; }
+.evidence-fields { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.evidence-fields button { max-width: 100%; margin: 0; border-radius: 7px; text-align: left; overflow-wrap: anywhere; }
+.evidence-fields button.on { border-color: #155eef; color: #155eef; background: #eef4ff; }
+.excerpt mark { background: #ffdf6e; color: #111; border-radius: 2px; padding: 1px 0; }
+.evidence-help { font-size: 12px; line-height: 1.6; }
+.evidence-choice select { width: 100%; max-width: 100%; }
+.watch-help { font-size: 12px; color: #777; line-height: 1.6; padding: 0 8px; }
+.watch-suggestions { list-style: none; margin: 4px 0; padding: 0; max-height: 340px; overflow: auto; }
+.watch-suggestions button { padding: 8px; width: 100%; border: 0; border-bottom: 1px solid #eee; background: #fff; color: #155eef; text-align: left; overflow-wrap: anywhere; }
+.watch-suggestions small { display: block; color: #888; margin-top: 3px; }
+.watch-row span { overflow-wrap: anywhere; min-width: 0; }
+.digest-content { white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 20px 30px; padding: 22px; border: 1px solid #eee; border-radius: 12px; font: 14px/1.8 "IBM Plex Mono", ui-monospace, monospace; background: #fff; }
+.digest-meta { margin: 12px 20px; font-size: 12px; color: #888; }
+.ledger-tools label { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
+.ledger-tools input[type="checkbox"] { flex: none; }
+.ledger-desk .desk-top { flex-wrap: wrap; height: auto; min-height: 64px; padding-top: 10px; padding-bottom: 10px; }
+.ledger-desk .desk-top > a:not(.desk-back) { font-size: 13px; white-space: nowrap; }
+.price-table { min-width: 1180px; }
+.price-table td:nth-child(4) { min-width: 100px; }
+.price-table td:nth-child(5) { min-width: 150px; }
+.price-table td:nth-child(8) { min-width: 210px; }
+.ledger-sheet tr:focus-visible { outline: 2px solid #155eef; outline-offset: -2px; }
+@media (max-width: 1100px) {
+  .watch-desk .desk-side .archive { flex-direction: column; overflow-x: visible; }
+  .watch-desk .desk-side .archive h2 { display: block; }
+  .watch-desk .archive-add { margin-left: 8px; }
+}
+@media (max-width: 800px) {
+  .home-update-list { grid-template-columns: 1fr; }
+  .home-updates { width: calc(100% - 32px); }
+  .shot-grid { width: calc(100% - 32px); margin-top: 24px; }
+}
+@media (max-width: 560px) {
+  .ledger-desk .desk-top { display: flex; gap: 10px; }
+  .ledger-desk .desk-title { flex: 1; }
+  .ledger-desk .desk-status { flex-basis: calc(100% - 50px); font-size: 12px; }
+  .ledger-desk .desk-morning { margin-left: auto; }
+  .price-filters label { flex: 1 1 120px; min-width: 0; }
+  .price-filters select { width: 100%; max-width: 100% !important; min-width: 0; }
+  .home-freshness { gap: 8px 12px; }
+  .shot-top nav { flex-wrap: wrap; }
+  .excerpt { padding: 20px 16px; }
+}
 @media (max-width: 800px) {
   .shot-top { grid-template-columns: 1fr; gap: 12px; }
   .shot-top nav { justify-content: center; }

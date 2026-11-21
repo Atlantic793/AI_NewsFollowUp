@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { request } from "../api";
-import { COLUMN_TITLES, clock, type DiffView, type EventView, type PriceView, type RankView } from "../types";
+import { COLUMN_TITLES, clock, type DiffView, type EventView, type HotView, type PriceView, type RankView } from "../types";
 
 interface Hit {
   name: string;
@@ -9,6 +9,8 @@ interface Hit {
   ranks: RankView[];
   events: EventView[];
   diffs: DiffView[];
+  noMatchReason: string;
+  hot: HotView[];
 }
 
 export function WatchPage() {
@@ -16,11 +18,14 @@ export function WatchPage() {
   const [hits, setHits] = useState<Hit[]>([]);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
+  const [candidates, setCandidates] = useState<Array<{ name: string; columns: string[] }>>([]);
+  const [saving, setSaving] = useState(false);
 
   function load() {
-    request<{ names: string[]; hits: Hit[] }>("/api/ledger/watch").then((body) => {
+    request<{ names: string[]; hits: Hit[]; candidates: Array<{ name: string; columns: string[] }> }>("/api/ledger/watch").then((body) => {
       setNames(body.names);
       setHits(body.hits);
+      setCandidates(body.candidates);
     }).catch((reason: Error) => setError(reason.message));
   }
 
@@ -29,12 +34,15 @@ export function WatchPage() {
   async function add() {
     if (!draft.trim()) return;
     setError("");
+    setSaving(true);
     try {
       await request("/api/ledger/watch", { method: "POST", body: JSON.stringify({ name: draft }) });
       setDraft("");
       load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "追踪名单没有更新。");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -49,7 +57,7 @@ export function WatchPage() {
   }
 
   return (
-    <div className="desk ledger-desk">
+    <div className="desk ledger-desk watch-desk">
       <header className="desk-top">
         <Link className="desk-back" to="/" aria-label="回到首页">←</Link>
         <h1 className="desk-title">定制追踪</h1>
@@ -67,9 +75,12 @@ export function WatchPage() {
               </div>
             ))}
             <form className="archive-add" onSubmit={(event) => { event.preventDefault(); void add(); }}>
-              <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="完整模型名，例如 deepseek-flash" aria-label="模型或套餐名" />
-              <button type="submit">添加</button>
+              <input value={draft} list="watch-candidates" onChange={(event) => setDraft(event.target.value)} placeholder="搜索已有模型，或输入完整名称" aria-label="模型或套餐名" />
+              <datalist id="watch-candidates">{candidates.map((item) => <option key={item.name} value={item.name}>{item.columns.join("、")}</option>)}</datalist>
+              <button type="submit" disabled={saving || !draft.trim()}>{saving ? "添加中" : "添加"}</button>
             </form>
+            <p className="watch-help">从已入库的 {candidates.length} 个名称中选择。也可以在价目表、排名和热榜直接点关注。</p>
+            {draft.trim() ? <ul className="watch-suggestions">{candidates.filter((item) => item.name.toLocaleLowerCase().includes(draft.trim().toLocaleLowerCase()) && !names.includes(item.name)).slice(0, 8).map((item) => <li key={item.name}><button type="button" onClick={() => setDraft(item.name)}>{item.name}<small>{item.columns.join("、")}</small></button></li>)}</ul> : null}
           </div>
         </aside>
         <main className="desk-main">
@@ -87,7 +98,7 @@ export function WatchPage() {
                       </li>
                     ))}
                   </ul>
-                ) : <p className="story-copy">今天没有变化。</p>}
+                ) : <p className="story-copy">今天没有记录到匹配的变化。</p>}
                 {hit.prices.length > 0 ? (
                   <ul className="watch-list">
                     {hit.prices.slice(0, 8).map((row) => <li key={`p${row.id}`}><small>{row.vendor} · {row.tier}</small>{row.product} {row.metric}{row.condition ? `（${row.condition}）` : ""}：<b>{row.price}</b> {row.unit}</li>)}
@@ -104,7 +115,8 @@ export function WatchPage() {
                     {hit.events.map((row) => <li key={`e${row.id}`}><small>{row.vendor} · {row.date}</small>{row.title}</li>)}
                   </ul>
                 ) : null}
-                {hit.prices.length + hit.ranks.length + hit.events.length === 0 ? <p className="story-copy">库里还没有这个名字的行。</p> : null}
+                {hit.hot.length > 0 ? <ul className="watch-list">{hit.hot.map((row) => <li key={row.id}><small>{row.site} · 第 {row.rank} 名</small><a href={row.url} target="_blank" rel="noreferrer">{row.title}</a> · {row.summary || row.heat}</li>)}</ul> : null}
+                {hit.noMatchReason ? <p className="ledger-note">{hit.noMatchReason} <Link to="/collect">查看采集情况</Link></p> : null}
               </article>
             ))}
           </div>

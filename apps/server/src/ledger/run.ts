@@ -24,10 +24,12 @@ export async function runLedger(deps: AppDeps, store: LedgerStore, ids: readonly
   const robotsCache = new Map<string, RobotsResult>();
   for (const [index, source] of sources.entries()) {
     onStep({ done: index, total: sources.length, current: source.id });
+    const started = performance.now();
     const record = await capture(deps, store, source, lastHit, robotsCache);
+    record.run.durationMs = Math.round(performance.now() - started);
     store.recordRun(record.run, record.rejected);
   }
-  await writeDigests(deps, store, sources, diffCursor).catch(() => undefined);
+  await writeDigests(deps, store, sources, diffCursor).catch(() => { throw new Error("采集已完成，但本地简报写入失败。请检查数据目录的可写权限。"); });
   onStep({ done: sources.length, total: sources.length, current: "" });
 }
 
@@ -44,19 +46,19 @@ async function capture(deps: AppDeps, store: LedgerStore, source: SourceDef, las
     extracted: 0, cleaned: 0, stored: 0, changed: 0, rejected: 0, reasons: {},
     llmDrafts: 0, llmKept: 0, llmDropped: 0,
   };
-  const finish = (status: RunRecord["status"], error: string): Captured => ({ run: { ...run, status, error }, rejected: [] });
+  const finish = (status: RunRecord["status"], error: string, failureKind: RunRecord["failureKind"] = "parse"): Captured => ({ run: { ...run, status, error, failureKind }, rejected: [] });
 
-  if (source.needs === "kaggle" && !deps.kaggle) return finish("skipped", "没有配置 Kaggle 凭据：在项目根目录 .env 写 KAGGLE_USERNAME 和 KAGGLE_KEY");
+  if (source.needs === "kaggle" && !deps.kaggle) return finish("skipped", "没有配置 Kaggle 凭据：在项目根目录 .env 写 KAGGLE_USERNAME 和 KAGGLE_KEY", "credentials");
   const target = new URL(source.url);
   const robots = await robotsFor(deps, target, lastHit, robotsCache);
-  if (robots.unreadable) return finish("skipped", robots.unreadable);
-  if (!robots.allowed(`${target.pathname}${target.search}`)) return finish("skipped", "robots.txt 不允许抓这个路径");
+  if (robots.unreadable) return finish("skipped", robots.unreadable, "network");
+  if (!robots.allowed(`${target.pathname}${target.search}`)) return finish("skipped", "robots.txt 不允许抓这个路径", "policy");
 
   await waitHost(lastHit, target.host, deps);
   const page = await fetchText(deps, source.url, source.needs === "kaggle" ? deps.kaggle : null);
   run.httpStatus = page.status;
-  if (!page.ok) return finish("failed", page.error);
-  if (new URL(page.finalUrl).host !== target.host) return finish("failed", `跳到了别的网站：${new URL(page.finalUrl).host}`);
+  if (!page.ok) return finish("failed", page.error, page.status === null || page.status === 408 || page.status === 429 || page.status >= 500 ? "network" : "access");
+  if (new URL(page.finalUrl).host !== target.host) return finish("failed", `跳到了别的网站：${new URL(page.finalUrl).host}`, "access");
 
   run.bytes = Buffer.byteLength(page.body, "utf8");
   run.hash = createHash("sha256").update(page.body).digest("hex");
@@ -75,6 +77,7 @@ async function capture(deps: AppDeps, store: LedgerStore, source: SourceDef, las
   }
 
   const cleaned: CleanedSet = clean(source, extracted, day);
+  for (const row of cleaned.rows) row.provenance = { extraction: "rule", modelFields: [], brief: "unknown" };
   run.cleaned = cleaned.rows.length;
   run.rejected = cleaned.rejected.length;
   for (const item of cleaned.rejected) run.reasons[item.reason] = (run.reasons[item.reason] ?? 0) + 1;
@@ -113,7 +116,7 @@ async function robotsFor(deps: AppDeps, target: URL, lastHit: Map<string, number
   if (cached) return cached;
   await waitHost(lastHit, target.host, deps);
   const response = await fetchText(deps, `${target.origin}/robots.txt`, null);
-  const unreadable = response.status === null || response.status >= 500 ? "robots.txt 读不到，按规范这一轮先不抓" : "";
+  const unreadable = response.status === null || response.status === 408 || response.status === 429 || response.status >= 500 ? "robots.txt 读不到，按规范这一轮先不抓" : "";
   const body = response.ok && !/html/i.test(response.contentType) ? response.body : "";
   const result: RobotsResult = { unreadable, allowed: (pathAndQuery) => pathAllowed(body, pathAndQuery) };
   cache.set(target.origin, result);

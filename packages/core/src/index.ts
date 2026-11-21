@@ -29,6 +29,7 @@ export type {
   HotRow,
   PriceDraft,
   PriceRow,
+  Provenance,
   RankDraft,
   RankRow,
   Rejected,
