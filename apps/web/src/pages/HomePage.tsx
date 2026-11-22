@@ -50,7 +50,6 @@ export function HomePage() {
   const day = data ? data.day.replaceAll("-", ".") : "";
   return (
     <div className="shot">
-      <div className="shot-lights" aria-hidden="true"><span /><span /><span /></div>
       <header className="shot-top">
         <div />
         <div className="shot-brand">
@@ -64,51 +63,21 @@ export function HomePage() {
         </nav>
       </header>
       {error ? <p className="shot-error">{error}</p> : null}
-      <section className="home-updates" aria-label="今日重点变化">
+      <div className="home-sheet">
         <div className="home-freshness">
           <span>最近成功 <strong>{clock(data?.freshness.latestSuccessAt ?? "")}</strong></span>
           <span>最早数据 <strong>{clock(data?.freshness.oldestSuccessAt ?? "")}</strong></span>
           <Link to="/collect">{data?.freshness.failed ?? 0} 个失败来源 · {data?.freshness.issues ?? 0} 个异常来源</Link>
           {data && data.freshness.neverSucceeded > 0 ? <span>{data.freshness.neverSucceeded}/{data.freshness.enabled} 个启用来源尚未成功</span> : null}
         </div>
-        <div className="home-update-head"><h2>今日重点变化</h2><span>价格与服务状态优先</span></div>
-        <ul className="home-update-list">
-          {(data?.highlights ?? []).map((diff) => <li key={diff.id}><Link to={`/columns/${diff.column}?changes=1&source=${diff.sourceId}&diff=${diff.id}`}><small>{COLUMN_TITLES[diff.column]} · {diff.vendor}</small><strong>{diff.label}</strong><span>{diffText(diff)}</span><time>{clock(diff.fetchedAt)}</time></Link></li>)}
-        </ul>
-        {data && data.highlights.length === 0 ? <p className="shot-empty">今天还没有记录到变化。首次成功采集作为基线，下一轮开始比较。</p> : null}
-      </section>
-      <div className="shot-grid">
-        <Link className="shot-card" to="/columns/hot">
-          <div className="shot-card-head"><h2>热榜</h2><Changes count={data?.changes.hot ?? 0} baseline={data?.baselines.hot ?? false} /></div>
-          <div className="shot-pills">
-            <Pill on={data?.hotEnabled.github ?? true} label="GitHub" onClick={(event) => { event.preventDefault(); void toggleHot("github"); }} />
-            <Pill on={data?.hotEnabled.huggingface ?? true} label="Hugging Face" onClick={(event) => { event.preventDefault(); void toggleHot("huggingface"); }} />
-            <Pill on={data?.hotEnabled.kaggle ?? false} label="Kaggle" onClick={(event) => { event.preventDefault(); void toggleHot("kaggle"); }} />
-          </div>
-          <ul>
-            {(data?.hot ?? []).slice(0, 4).map((item) => <li key={item.id}><span>{item.rank}. {item.title}</span><em>{item.site}</em></li>)}
-            {data && data.hot.length === 0 ? <li className="shot-empty">还没有抓到热榜。</li> : null}
-          </ul>
-        </Link>
-        <Link className="shot-card" to="/columns/price">
-          <div className="shot-card-head"><h2>价目</h2><Changes count={data?.changes.price ?? 0} baseline={data?.baselines.price ?? false} /></div>
-          <table>
-            <thead><tr><th>厂商</th><th>产品</th><th>输入价</th></tr></thead>
-            <tbody>
-              {(data?.prices ?? []).map((row) => (
-                <tr key={row.id}>
-                  <td>{row.vendor}</td>
-                  <td>{row.product}{row.condition ? <small> · {row.condition}</small> : null}</td>
-                  <td className="num">{row.price} <small>{row.unit}</small></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <section className="home-block" aria-labelledby="home-price">
+          <div className="shot-card-head"><h2 id="home-price"><Link to="/columns/price">价目</Link></h2><Changes count={data?.changes.price ?? 0} baseline={data?.baselines.price ?? false} /></div>
+          <PriceTape rows={data?.prices ?? []} />
           {data && data.prices.length === 0 ? <p className="shot-empty">还没有价目。去采集跑一轮。</p> : null}
-          {data && data.priceRows > 0 ? <p className="shot-foot">全表 {data.priceRows} 行，每格一行。美元按 1 美元 = {data.usdToCny} 元换算</p> : null}
-        </Link>
-        <Link className="shot-card" to="/columns/rank">
-          <div className="shot-card-head"><h2>排名</h2><Changes count={data?.changes.rank ?? 0} baseline={data?.baselines.rank ?? false} /></div>
+          {data && data.priceRows > 0 ? <p className="shot-foot">全表 {data.priceRows} 行。1 美元 = {data.usdToCny} 元</p> : null}
+        </section>
+        <section className="home-block" aria-labelledby="home-rank">
+          <div className="shot-card-head"><h2 id="home-rank"><Link to="/columns/rank">排名</Link></h2><Changes count={data?.changes.rank ?? 0} baseline={data?.baselines.rank ?? false} /></div>
           <div className="shot-boards">
             {BOARDS.map((board) => {
               const top = data?.ranks.find((row) => row.sourceId === board.id);
@@ -116,29 +85,86 @@ export function HomePage() {
                 <div key={board.id}>
                   <small>{board.label}</small>
                   <strong>{top ? top.model : "—"}</strong>
-                  <em>{top ? `${top.basis === "sorted" ? "按分数排序" : `第 ${top.rank} 名`} · ${top.score}${top.boardDate ? "" : " · 页面未印日期"}` : "未抓到"}</em>
+                  <em>{top ? `${top.basis === "sorted" ? "按分数排序" : `第 ${top.rank} 名`} · ${top.score}${top.boardDate ? ` · ${top.boardDate}` : ""}` : "未抓到"}</em>
                 </div>
               );
             })}
           </div>
-        </Link>
-        <Link className="shot-card" to="/columns/event">
+        </section>
+        <section className="home-block" aria-labelledby="home-hot">
+          <div className="shot-card-head"><h2 id="home-hot"><Link to="/columns/hot">热榜</Link></h2><Changes count={data?.changes.hot ?? 0} baseline={data?.baselines.hot ?? false} /></div>
+          <div className="shot-pills">
+            <Pill on={data?.hotEnabled.github ?? true} label="GitHub" onClick={(event) => { event.preventDefault(); void toggleHot("github"); }} />
+            <Pill on={data?.hotEnabled.huggingface ?? true} label="Hugging Face" onClick={(event) => { event.preventDefault(); void toggleHot("huggingface"); }} />
+            <Pill on={data?.hotEnabled.kaggle ?? false} label="Kaggle" onClick={(event) => { event.preventDefault(); void toggleHot("kaggle"); }} />
+          </div>
+          <ul className="home-lines">
+            {(data?.hot ?? []).map((item) => <li key={item.id}><span className="who">{item.site}</span><span><b>{item.title}</b><small>{item.summary}</small></span></li>)}
+            {data && data.hot.length === 0 ? <li className="shot-empty">还没有抓到热榜。</li> : null}
+          </ul>
+        </section>
+        <section className="home-block" aria-labelledby="home-event">
           <div className="shot-card-head">
-            <h2>厂商动态</h2>
+            <h2 id="home-event"><Link to="/columns/event">厂商动态</Link></h2>
             {data && data.outages > 0 ? <b className="bad">{data.outages} 个组件异常</b> : <Changes count={data?.changes.event ?? 0} baseline={data?.baselines.event ?? false} />}
           </div>
-          <ul>
+          <ul className="home-lines">
             {(data?.events ?? []).map((item) => (
               <li key={item.id}>
-                <span><b>{item.vendor}</b> {item.title}</span>
+                <span className="who">{item.vendor}</span>
+                <span>{item.brief || item.title}</span>
                 {item.type === "cn_access" ? <i>中国大陆</i> : <em>{item.date.slice(5)}</em>}
               </li>
             ))}
             {data && data.events.length === 0 ? <li className="shot-empty">还没有官网动态。</li> : null}
           </ul>
-        </Link>
+        </section>
+        <section className="home-updates" aria-label="今日重点变化">
+          <div className="home-update-head"><h2>今日重点变化</h2><span>价格与服务状态优先</span></div>
+          <ul className="home-update-list">
+            {(data?.highlights ?? []).map((diff) => <li key={diff.id}><Link to={`/columns/${diff.column}?changes=1&source=${diff.sourceId}&diff=${diff.id}`}><small>{COLUMN_TITLES[diff.column]} · {diff.vendor}</small><strong>{diff.label}</strong><span>{diffText(diff)}</span><time>{clock(diff.fetchedAt)}</time></Link></li>)}
+          </ul>
+          {data && data.highlights.length === 0 ? <p className="shot-empty">今天还没有记录到变化。首次成功采集作为基线，下一轮开始比较。</p> : null}
+        </section>
       </div>
     </div>
+  );
+}
+
+function PriceTape(props: { rows: PriceView[] }) {
+  const groups = new Map<string, PriceView[]>();
+  for (const row of props.rows) {
+    const key = row.unit || row.metric;
+    const list = groups.get(key) ?? [];
+    list.push(row);
+    groups.set(key, list);
+  }
+  return (
+    <>
+      {[...groups.entries()].map(([unit, items]) => {
+        const sorted = [...items].sort((left, right) => (right.amount ?? -1) - (left.amount ?? -1));
+        const max = Math.max(...sorted.map((row) => row.amount ?? 0), 0);
+        return (
+          <div key={unit}>
+            <p className="home-unit">{unit}</p>
+            <ol className="tape">
+              {sorted.map((row) => {
+                const width = max > 0 && row.amount !== null ? (row.amount / max) * 100 : 0;
+                const official = row.officialPrice && row.officialPrice !== row.price ? `官网 ${row.officialPrice}` : "";
+                return (
+                  <li key={row.id}>
+                    <span className="who">{row.vendor}</span>
+                    <span className="track"><span className="bar" style={{ width: `${width}%` }} /></span>
+                    <span className="yuan">{row.price}</span>
+                    <span className="what">{row.product}{row.condition ? ` · ${row.condition}` : ""}{official ? <small>{official}</small> : null}</span>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        );
+      })}
+    </>
   );
 }
 

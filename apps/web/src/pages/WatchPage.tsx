@@ -112,7 +112,7 @@ export function WatchPage() {
                 ) : null}
                 {hit.events.length > 0 ? (
                   <ul className="watch-list">
-                    {hit.events.map((row) => <li key={`e${row.id}`}><small>{row.vendor} · {row.date}</small>{row.title}</li>)}
+                    {hit.events.map((row) => <li key={`e${row.id}`}><small>{row.vendor} · {row.date}</small>{row.brief || row.title}</li>)}
                   </ul>
                 ) : null}
                 {hit.hot.length > 0 ? <ul className="watch-list">{hit.hot.map((row) => <li key={row.id}><small>{row.site} · 第 {row.rank} 名</small><a href={row.url} target="_blank" rel="noreferrer">{row.title}</a> · {row.summary || row.heat}</li>)}</ul> : null}

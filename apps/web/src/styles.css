@@ -903,6 +903,34 @@ input.bench-find[type="text"]:focus { outline: none; border-bottom-color: #11111
 .collect-actions button { border: 1px solid var(--line); border-radius: 10px; background: #fff; padding: 6px 12px; }
 .collect-actions a { margin: 0 !important; display: inline !important; }
 .shot-foot { margin: 10px 0 0; color: #8a8a8a; font-size: 13px; }
+.home-sheet { width: min(1080px, calc(100% - 48px)); margin: 8px auto 64px; }
+.home-sheet .home-updates { width: auto; margin: 36px 0 0; }
+.home-block { margin-top: 32px; }
+.home-block h2 { margin: 0; font-size: 18px; }
+.home-block h2 a { color: inherit; text-decoration: none; }
+.home-block h2 a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.home-unit { margin: 14px 0 0; color: #4d5966; font-size: 13px; }
+.tape, .home-lines { list-style: none; margin: 0; padding: 0; }
+.tape li {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr) auto;
+  grid-template-areas: "who track yuan" "who what what";
+  gap: 2px 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid #ececec;
+}
+.tape .who, .home-lines .who { font-weight: 650; }
+.tape .track { grid-area: track; height: 10px; background: #ececec; }
+.tape .bar { display: block; height: 100%; min-width: 2px; background: #14667f; }
+.tape .yuan { grid-area: yuan; font-family: "IBM Plex Mono", ui-monospace, monospace; font-weight: 650; }
+.tape .what { grid-area: what; color: #4d5966; font-size: 13px; }
+.tape .what small { margin-left: 8px; }
+.home-lines { margin-top: 8px; }
+.home-lines li { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; padding: 12px 0; border-top: 1px solid #ececec; }
+.home-lines b { display: block; font-weight: 650; }
+.home-lines small { display: block; margin-top: 2px; color: #4d5966; font-size: 13px; font-weight: 400; }
+.home-lines em, .home-lines i { color: #4d5966; font-style: normal; font-size: 13px; }
 .shot-card td small { color: #8a8a8a; font-family: inherit; }
 .shot-card li em { white-space: nowrap; }
 .shot-card-head b.bad { background: #ff4638; }
@@ -973,7 +1001,9 @@ button:disabled { cursor: default; opacity: .5; }
 @media (max-width: 800px) {
   .home-update-list { grid-template-columns: 1fr; }
   .home-updates { width: calc(100% - 32px); }
-  .shot-grid { width: calc(100% - 32px); margin-top: 24px; }
+  .shot-grid, .home-sheet { width: calc(100% - 32px); margin-top: 24px; }
+  .tape li, .home-lines li { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "who yuan" "track track" "what what"; }
+  .home-lines .who { grid-column: 1 / -1; }
 }
 @media (max-width: 560px) {
   .ledger-desk .desk-top { display: flex; gap: 10px; }

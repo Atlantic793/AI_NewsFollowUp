@@ -60,7 +60,7 @@ export function mountLedger(app: Hono, deps: AppDeps): LedgerStore {
       freshness: freshness(sources),
       highlights: store.highlightsOn(day),
       hotEnabled: { github: enabled(HOT_IDS.github), huggingface: enabled(HOT_IDS.huggingface), kaggle: enabled(HOT_IDS.kaggle) },
-      hot: firstPer(hot, (row) => row.sourceId, 3),
+      hot: firstPer(hot, (row) => row.sourceId, 3).map(presentHot),
       usdToCny: USD_TO_CNY,
       prices: pickHomePrices(store.prices()).map(presentPrice),
       priceRows: store.prices().length,
@@ -331,10 +331,21 @@ function presentPrice(row: PriceView) {
   };
 }
 
+function readableChinese(text: string): string {
+  const line = introText(text);
+  if (!line) return "";
+  const han = (line.match(/\p{Script=Han}/gu) ?? []).length;
+  const latin = (line.match(/[A-Za-z]/g) ?? []).length;
+  return han > 0 && latin <= han ? line : "";
+}
+
 function presentEvent(row: EventView) {
-  const brief = introText(row.brief);
-  const detail = shownText(introText(row.detail) || row.detail);
-  return { ...row, title: row.title, detail, brief: brief || detail };
+  const brief = readableChinese(row.brief);
+  const detail = readableChinese(row.detail);
+  const title = readableChinese(row.title);
+  const sentence = shownText(brief || detail || title || "说明见右侧原文");
+  const detailText = detail ? shownText(detail) : "";
+  return { ...row, title: row.title, detail: detailText && !sentence.includes(detailText) ? detailText : "", brief: sentence };
 }
 
 function presentHeat(heat: string): string {

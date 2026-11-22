@@ -444,21 +444,26 @@ function shapeOf(kind: Kind, rows: unknown[], sources: SourceView[], groupPrices
       return {
         heads: ["日期", "厂商", "类型", "标题", "说明"],
         facets: types.map((type) => ({ id: type, label: eventTypeName(type) })),
-        items: (rows as EventView[]).map((row) => ({
+        items: (rows as EventView[]).map((row) => {
+          const line = row.brief || "说明见右侧原文";
+          const headline = row.type === "status" || /\p{Script=Han}/u.test(row.title) ? row.title : line;
+          const note = line !== headline ? line : (row.detail || "—");
+          return {
           id: row.id,
           rowIds: [row.id],
           sourceId: row.sourceId,
           facet: row.type,
-          cells: [<span key="d" className="num nowrap">{row.date}</span>, <span key="v" className="nowrap">{row.vendor || vendorOf(row.sourceId)}</span>, <span key="t" className={`tag tag-${row.type}`}>{eventTypeName(row.type)}</span>, <b key="h">{row.title}</b>, <span key="x" className="clip">{row.detail || "—"}</span>],
+          cells: [<span key="d" className="num nowrap">{row.date}</span>, <span key="v" className="nowrap">{row.vendor || vendorOf(row.sourceId)}</span>, <span key="t" className={`tag tag-${row.type}`}>{eventTypeName(row.type)}</span>, <b key="h">{headline}</b>, <span key="x" className="clip">{note}</span>],
           search: `${row.vendor} ${row.title} ${row.detail} ${row.brief}`.toLocaleLowerCase(),
-          title: row.title,
+          title: headline,
           excerpt: row.excerpt,
           link: row.url,
           fetchedAt: row.fetchedAt,
           brief: row.brief,
           watchName: "",
           evidence: [evidenceOf(row)],
-        })),
+          };
+        }),
       };
     }
     default: {

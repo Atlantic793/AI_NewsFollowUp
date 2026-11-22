@@ -146,6 +146,10 @@ describe("接口展示和参数边界", () => {
     const body = await (await app.request("/api/ledger/column/event")).json();
     expect(body.rows.map((row: { title: string }) => row.title)).toContain("Introducing model-x");
     expect(body.rows.map((row: { title: string }) => row.title)).toContain("ChatGPT API");
+    const news = body.rows.find((row: { title: string }) => row.title === "Introducing model-x");
+    expect(news.brief).toBe("说明见右侧原文");
+    expect(news.detail).not.toMatch(/available/i);
+    expect(body.rows.find((row: { title: string }) => row.title === "ChatGPT API").brief).toBe("正常");
     await post(app, "/api/ledger/watch", { name: "model-x" });
     const watch = await (await app.request("/api/ledger/watch")).json();
     expect(watch.hits[0].events).toHaveLength(1);
